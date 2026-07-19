@@ -12,10 +12,10 @@ PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
 OUTPUT_DIR = PROJECT_ROOT / "outputs"
 
 # Restaurant location, used to pull historical weather from Open-Meteo.
-# Asian Eatery, Germantown, TN (Memphis metro, Central Time).
-LATITUDE = 35.0868
-LONGITUDE = -89.8101
-TIMEZONE = "America/Chicago"
+# Upscale steakhouse profile (Chop House style), Knoxville, TN.
+LATITUDE = 35.9606
+LONGITUDE = -83.9207
+TIMEZONE = "America/New_York"
 
 # US state for the holidays calendar.
 HOLIDAY_STATE = "TN"

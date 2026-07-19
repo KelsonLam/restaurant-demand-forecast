@@ -1,11 +1,12 @@
-"""Build a calibrated SIMULATED dataset for Asian Eatery, Germantown TN.
+"""Build a calibrated SIMULATED dataset for an upscale Knoxville steakhouse.
 
 Base: the public Maven Analytics "Pizza Place Sales" dataset (21k real
 restaurant orders over one year, data/public/) supplies the demand *shape* --
 hour-of-day by weekday, day-of-week mix, and month-of-year seasonality.
-That shape is rescaled to a delivery-only Asian restaurant profile and
-modulated by REAL Germantown weather (Open-Meteo) and US holidays, then
-written out in Uber Eats / DoorDash export formats to data/raw/.
+That shape is rescaled to a delivery-only upscale steakhouse profile
+(dinner-dominant, Fri/Sat peaks, occasion spikes) and modulated by REAL
+Knoxville weather (Open-Meteo) and US holidays, then written out in
+Uber Eats / DoorDash export formats to data/raw/.
 
 This is simulated data. It stands in until the real Uber Eats Manager /
 DoorDash Merchant Portal exports are available.
@@ -23,24 +24,39 @@ from config import HOLIDAY_STATE, LATITUDE, LONGITUDE, PROJECT_ROOT, RAW_DIR, TI
 PUBLIC = PROJECT_ROOT / "data" / "public"
 START, END = "2025-07-01", "2026-07-15"
 
-# Target scale: suburban Asian restaurant, delivery channels only.
-TARGET_DAILY_ORDERS = 34          # combined Uber Eats + DoorDash average
-UBEREATS_SHARE = 0.58
-TARGET_AVG_TICKET = 41.0          # family-size Asian delivery orders
+# Target scale: upscale steakhouse, delivery channels only. Lower volume,
+# much higher ticket than casual concepts.
+TARGET_DAILY_ORDERS = 22          # combined Uber Eats + DoorDash average
+UBEREATS_SHARE = 0.55
+TARGET_AVG_TICKET = 74.0          # steak entrees + sides skew checks high
 CLOSED_HOLIDAYS = {"Thanksgiving", "Christmas Day"}
 
 # The pizza base data is dine-in/carryout shaped (Friday peak, big weekday
-# lunch). Delivery channels skew weekend + dinner, so these profiles replace
-# the base day-of-week mix and reweight the hourly shape. Mean of DOW = 1.0.
-DOW_DELIVERY = {0: 0.86, 1: 0.83, 2: 0.88, 3: 0.96, 4: 1.16, 5: 1.24, 6: 1.07}
+# lunch). A steakhouse's delivery demand is strongly dinner- and
+# weekend-skewed, so these profiles replace the base day-of-week mix and
+# reweight the hourly shape. Mean of DOW = 1.0.
+DOW_DELIVERY = {0: 0.78, 1: 0.84, 2: 0.90, 3: 0.98, 4: 1.22, 5: 1.32, 6: 0.96}
 
 
 def hour_weight(hour: int, dow: int) -> float:
-    if hour <= 13:                      # lunch: much lighter for delivery
-        return 0.85 if dow >= 5 else 0.55
+    if hour <= 13:                      # steakhouse lunch delivery is thin
+        return 0.6 if dow >= 5 else 0.3
     if hour <= 16:
-        return 0.8
-    return 1.35                         # dinner dominates
+        return 0.5
+    return 1.6                          # dinner overwhelmingly dominates
+
+
+def occasion_boost(day) -> float:
+    """Steakhouse occasion spikes not in the federal holiday calendar."""
+    if (day.month, day.day) == (2, 14):                      # Valentine's Day
+        return 1.7
+    if day.month == 5 and day.dayofweek == 6 and 8 <= day.day <= 14:
+        return 1.6                                           # Mother's Day
+    if day.month == 6 and day.dayofweek == 6 and 15 <= day.day <= 21:
+        return 1.45                                          # Father's Day
+    if (day.month, day.day) == (12, 31):                     # New Year's Eve
+        return 1.3
+    return 1.0
 
 rng = np.random.default_rng(7)
 
@@ -81,7 +97,7 @@ def load_base_patterns():
 
 
 def fetch_weather():
-    cache = PUBLIC / "germantown_weather.csv"
+    cache = PUBLIC / f"weather_{LATITUDE}_{LONGITUDE}.csv"
     if cache.exists():
         return pd.read_csv(cache, parse_dates=["date"])
     url = ("https://archive-api.open-meteo.com/v1/archive"
@@ -114,15 +130,16 @@ def main() -> None:
         w = weather.loc[day] if day in weather.index else None
         if w is not None and pd.notna(w["precip_in"]) and w["precip_in"] > 0.1:
             mu *= 1.09  # rain nudges people toward delivery
-        if hol:  # open but slower on most holidays
-            mu *= 0.85
+        if hol:  # open but slower on most federal holidays
+            mu *= 0.9
+        mu *= occasion_boost(day)
         # day-level noise beyond Poisson (supply, promos, randomness)
         mu *= rng.gamma(30, 1 / 30)
         n = rng.poisson(mu)
         hours = rng.choice(np.arange(11, 22), size=n, p=hour_probs[day.dayofweek])
         base = rng.choice(base_totals, size=n)
-        totals = np.round(base * ticket_scale * rng.normal(1, 0.12, n), 2)
-        totals = np.clip(totals, 12.0, None)
+        totals = np.round(base * ticket_scale * rng.normal(1, 0.14, n), 2)
+        totals = np.clip(totals, 25.0, None)
         for h, t in zip(hours, totals):
             ts = day.replace(hour=int(h), minute=int(rng.integers(0, 60)),
                              second=int(rng.integers(0, 60)))
@@ -153,9 +170,10 @@ def main() -> None:
         "SIMULATED DATA - calibrated, not actual restaurant records.\n"
         "Demand shape: Maven Analytics 'Pizza Place Sales' public dataset\n"
         "(hour-of-day, day-of-week, month-of-year patterns from 21k real orders).\n"
-        "Rescaled to a delivery-only Asian restaurant profile (~34 orders/day,\n"
-        "~$41 avg ticket, weekend- and dinner-skewed per delivery norms) and\n"
-        "modulated by real Germantown, TN weather (Open-Meteo) and TN holidays.\n"
+        "Rescaled to a delivery-only upscale steakhouse profile (~22 orders/day,\n"
+        "~$74 avg ticket, dinner-dominant, Fri/Sat peaks, occasion spikes on\n"
+        "Valentine's/Mother's/Father's Day and NYE) and modulated by real\n"
+        "Knoxville, TN weather (Open-Meteo) and TN holidays.\n"
         "Replace these files with real Uber Eats Manager / DoorDash Merchant\n"
         "Portal exports when available; the pipeline runs unchanged.\n",
         encoding="utf-8")

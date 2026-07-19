@@ -71,39 +71,54 @@ def build_payload() -> dict:
 
 
 TEMPLATE = r"""<meta charset="utf-8">
-<title>Asian Eatery — Demand Forecast</title>
+<title>Knoxville Steakhouse — Demand Forecast</title>
 <style>
 :root {
-  color-scheme: light;
-  --page: #f9f9f7; --surface: #fcfcfb;
-  --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
-  --grid: #e1e0d9; --baseline: #c3c2b7; --ring: rgba(11,11,11,.10);
-  --accent: #2a78d6; --accent-soft: rgba(42,120,214,.10);
-  --green: #008300; --green-soft: rgba(0,131,0,.10);
-  --seq0:#eef4fd; --seq1:#cde2fb; --seq2:#9ec5f4; --seq3:#6da7ec;
-  --seq4:#3987e5; --seq5:#256abf; --seq6:#184f95; --seq7:#0d366b;
+  color-scheme: dark;
+  --page: #0B0F19; --surface: #1E293B;
+  --ink: #F8FAFC; --ink-2: #CBD5E1; --muted: #94A3B8;
+  --grid: rgba(255,255,255,.05); --baseline: rgba(255,255,255,.14);
+  --ring: rgba(255,255,255,.06);
+  --accent: #2DD4BF; --accent-soft: rgba(45,212,191,.13);
+  --raw: rgba(255,255,255,.15); --bar: #475569;
+  --band: rgba(255,255,255,.03);
+  --chip-normal-bg: rgba(148,163,184,.14); --chip-normal: #CBD5E1;
+  --chip-slow-bg: rgba(148,163,184,.08); --chip-slow: #94A3B8;
+  --seq0:#152230; --seq1:#134E4A; --seq2:#115E59; --seq3:#0F766E;
+  --seq4:#0D9488; --seq5:#14B8A6; --seq6:#2DD4BF; --seq7:#99F6E4;
+  --shadow: 0 1px 2px rgba(0,0,0,.3);
 }
-@media (prefers-color-scheme: dark) {
-  :root:where(:not([data-theme="light"])) {
-    color-scheme: dark;
-    --page: #0d0d0d; --surface: #1a1a19;
-    --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-    --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255,255,255,.10);
-    --accent: #3987e5; --accent-soft: rgba(57,135,229,.16);
-    --green: #0ca30c; --green-soft: rgba(12,163,12,.16);
-    --seq0:#20293a; --seq1:#0d366b; --seq2:#184f95; --seq3:#256abf;
-    --seq4:#3987e5; --seq5:#6da7ec; --seq6:#9ec5f4; --seq7:#cde2fb;
+@media (prefers-color-scheme: light) {
+  :root:where(:not([data-theme="dark"])) {
+    color-scheme: light;
+    --page: #F8FAFC; --surface: #FFFFFF;
+    --ink: #0F172A; --ink-2: #334155; --muted: #64748B;
+    --grid: rgba(15,23,42,.06); --baseline: rgba(15,23,42,.18);
+    --ring: rgba(15,23,42,.08);
+    --accent: #0D9488; --accent-soft: rgba(13,148,136,.12);
+    --raw: rgba(15,23,42,.22); --bar: #94A3B8;
+    --band: rgba(15,23,42,.035);
+    --chip-normal-bg: rgba(100,116,139,.12); --chip-normal: #475569;
+    --chip-slow-bg: rgba(100,116,139,.08); --chip-slow: #64748B;
+    --seq0:#F0FDFA; --seq1:#CCFBF1; --seq2:#99F6E4; --seq3:#5EEAD4;
+    --seq4:#2DD4BF; --seq5:#14B8A6; --seq6:#0D9488; --seq7:#0F766E;
+    --shadow: 0 1px 2px rgba(15,23,42,.05);
   }
 }
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0d0d0d; --surface: #1a1a19;
-  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
-  --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255,255,255,.10);
-  --accent: #3987e5; --accent-soft: rgba(57,135,229,.16);
-  --green: #0ca30c; --green-soft: rgba(12,163,12,.16);
-  --seq0:#20293a; --seq1:#0d366b; --seq2:#184f95; --seq3:#256abf;
-  --seq4:#3987e5; --seq5:#6da7ec; --seq6:#9ec5f4; --seq7:#cde2fb;
+:root[data-theme="light"] {
+  color-scheme: light;
+  --page: #F8FAFC; --surface: #FFFFFF;
+  --ink: #0F172A; --ink-2: #334155; --muted: #64748B;
+  --grid: rgba(15,23,42,.06); --baseline: rgba(15,23,42,.18);
+  --ring: rgba(15,23,42,.08);
+  --accent: #0D9488; --accent-soft: rgba(13,148,136,.12);
+  --raw: rgba(15,23,42,.22); --bar: #94A3B8;
+  --band: rgba(15,23,42,.035);
+  --chip-normal-bg: rgba(100,116,139,.12); --chip-normal: #475569;
+  --chip-slow-bg: rgba(100,116,139,.08); --chip-slow: #64748B;
+  --seq0:#F0FDFA; --seq1:#CCFBF1; --seq2:#99F6E4; --seq3:#5EEAD4;
+  --seq4:#2DD4BF; --seq5:#14B8A6; --seq6:#0D9488; --seq7:#0F766E;
+  --shadow: 0 1px 2px rgba(15,23,42,.05);
 }
 * { box-sizing: border-box; }
 body {
@@ -113,7 +128,7 @@ body {
 .wrap { max-width: 1060px; margin: 0 auto; padding: 36px 20px 56px; }
 header { display: flex; gap: 16px; align-items: center; }
 .mark { width: 46px; height: 46px; border-radius: 13px; flex: none;
-  background: linear-gradient(135deg, var(--accent), var(--seq6));
+  background: linear-gradient(135deg, #2DD4BF, #0F766E);
   position: relative; overflow: hidden; }
 .mark::before, .mark::after { content: ""; position: absolute; width: 3.5px;
   height: 44px; background: rgba(255,255,255,.85); border-radius: 2px; top: -5px; }
@@ -128,17 +143,18 @@ header h1 { margin: 0 0 2px; font-size: 25px; letter-spacing: -.015em; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr));
   gap: 14px; margin: 26px 0; }
 .tile { background: var(--surface); border: 1px solid var(--ring);
-  border-radius: 12px; padding: 15px 17px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; }
 .tile .v { font-size: 28px; font-weight: 700; letter-spacing: -.01em;
   font-variant-numeric: tabular-nums; }
-.spark { margin-top: 8px; }
 .tile .l { font-size: 13px; color: var(--ink-2); }
-.tile .n { font-size: 12px; color: var(--muted); }
+.tile .n { font-size: 12px; color: var(--muted); margin-top: auto;
+  padding-top: 8px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1.25fr; gap: 14px; }
 @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
 .card { background: var(--surface); border: 1px solid var(--ring);
   border-radius: 12px; padding: 20px 20px 14px; margin: 0 0 14px;
-  box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+  box-shadow: var(--shadow); }
 .card h2 { margin: 0 0 2px; font-size: 15px; }
 .card .hint { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; }
 svg { display: block; width: 100%; height: auto; }
@@ -163,8 +179,8 @@ tr:last-child td { border-bottom: none; }
 .chip { display: inline-block; padding: 2px 9px; border-radius: 99px;
   font-size: 12px; font-weight: 600; }
 .chip.busy { background: var(--accent-soft); color: var(--accent); }
-.chip.slow { background: var(--grid); color: var(--ink-2); }
-.chip.normal { background: var(--green-soft); color: var(--green); }
+.chip.slow { background: var(--chip-slow-bg); color: var(--chip-slow); }
+.chip.normal { background: var(--chip-normal-bg); color: var(--chip-normal); }
 footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
   border-top: 1px solid var(--grid); padding-top: 14px; }
 </style>
@@ -172,8 +188,8 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
 <header>
   <div class="mark" aria-hidden="true"></div>
   <div>
-    <p class="eyebrow" style="margin-bottom:3px">Demand forecasting · Germantown, TN</p>
-    <h1>Asian Eatery — Delivery Demand Dashboard</h1>
+    <p class="eyebrow" style="margin-bottom:3px">Demand forecasting · Knoxville, TN</p>
+    <h1>Knoxville Steakhouse — Delivery Demand Dashboard</h1>
     <p class="sub">Uber Eats + DoorDash orders, <span id="range"></span> · simulated data calibrated from public restaurant sales</p>
   </div>
 </header>
@@ -184,7 +200,7 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
   <h2>Orders per day</h2>
   <p class="hint">Daily delivery orders with 7-day average — hover for values</p>
   <div class="legend">
-    <span><i class="sw" style="background:var(--accent);opacity:.4"></i>Daily orders</span>
+    <span><i class="sw" style="background:var(--raw)"></i>Daily orders</span>
     <span><i class="sw" style="background:var(--accent)"></i>7-day average</span>
   </div>
   <div id="daily"></div>
@@ -198,7 +214,7 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
   </div>
   <div class="card">
     <h2>When orders arrive</h2>
-    <p class="hint">Total orders by hour and weekday — darker is busier</p>
+    <p class="hint">Total orders by hour and weekday — see the fewer→more scale</p>
     <div id="heat"></div>
   </div>
 </div>
@@ -228,10 +244,11 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
 
 <footer>
   Data: <b>simulated</b> — demand shape calibrated from the public Maven Analytics
-  “Pizza Place Sales” dataset (21k orders), rescaled to a delivery-only Asian
-  restaurant profile and modulated by real Germantown, TN weather (Open-Meteo)
-  and TN holidays. Models: seasonal naive, SARIMA, XGBoost. Built July 2026;
-  pipeline accepts real Uber Eats / DoorDash exports unchanged.
+  “Pizza Place Sales” dataset (21k orders), rescaled to a delivery-only upscale
+  steakhouse profile (dinner-dominant, Fri/Sat peaks, occasion spikes on
+  Valentine’s, Mother’s and Father’s Day) and modulated by real Knoxville, TN
+  weather (Open-Meteo) and TN holidays. Models: seasonal naive, SARIMA, XGBoost.
+  Built July 2026; pipeline accepts real Uber Eats / DoorDash exports unchanged.
 </footer>
 </div>
 <div class="tt" id="tt"></div>
@@ -276,20 +293,9 @@ document.getElementById('tiles').innerHTML = [
 ].map(([l, v, n]) =>
   `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div></div>`
 ).join('');
-(function sparkline() {
-  const vals = DATA.daily.map(d => d.a).filter(v => v != null).slice(-90);
-  const svg = el('svg', {viewBox: '0 0 200 30', class: 'spark'},
-    document.querySelector('.tile'));
-  const lo = Math.min(...vals), hi = Math.max(...vals);
-  const pts = vals.map((v, i) =>
-    `${(i / (vals.length - 1) * 198 + 1).toFixed(1)},${(27 - (v - lo) / (hi - lo) * 24).toFixed(1)}`);
-  el('polyline', {points: pts.join(' '), fill: 'none',
-    stroke: 'var(--accent)', 'stroke-width': 1.5}, svg);
-  const [ex, ey] = pts[pts.length - 1].split(',');
-  el('circle', {cx: ex, cy: ey, r: 2.5, fill: 'var(--accent)'}, svg);
-})();
 
 // ---- generic line chart with hover
+let gradSeq = 0;
 function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
   const P = {l: 34, r: 8, t: 8, b: 22};
   const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, document.getElementById(mount));
@@ -300,7 +306,7 @@ function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
   for (const b of (opts.bands || []))
     el('rect', {x: Math.max(P.l, x(b[0]) - step / 2), y: P.t,
       width: (b[1] - b[0] + 1) * step, height: H - P.t - P.b,
-      fill: 'var(--grid)', opacity: .38}, svg);
+      fill: 'var(--band)'}, svg);
   for (const v of niceTicks(ymax, 5)) {
     el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
       stroke: 'var(--grid)', 'stroke-width': .7}, svg);
@@ -322,9 +328,16 @@ function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
       if (firstX == null) firstX = x(i);
       lastX = x(i);
     });
-    if (s.area && firstX != null)
+    if (s.area && firstX != null) {
+      const gid = 'ag' + (++gradSeq);
+      const g = el('linearGradient', {id: gid, x1: 0, y1: 0, x2: 0, y2: 1}, svg);
+      el('stop', {offset: '0%',
+        style: `stop-color:${s.color};stop-opacity:.20`}, g);
+      el('stop', {offset: '100%',
+        style: `stop-color:${s.color};stop-opacity:0`}, g);
       el('path', {d: dd + `L${lastX.toFixed(1)} ${H - P.b} L${firstX.toFixed(1)} ${H - P.b} Z`,
-        fill: s.color, opacity: .09, stroke: 'none'}, svg);
+        fill: `url(#${gid})`, stroke: 'none'}, svg);
+    }
     el('path', {d: dd, fill: 'none', stroke: s.color,
       'stroke-width': s.w, opacity: s.op || 1,
       'stroke-dasharray': s.dash || 'none', 'stroke-linejoin': 'round'}, svg);
@@ -365,8 +378,8 @@ function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
 
 // ---- daily trend
 lineChart('daily', 1000, 300, [
-  {pts: DATA.daily.map(d => d.o), color: 'var(--accent)', w: 1, op: .38},
-  {pts: DATA.daily.map(d => d.a), color: 'var(--accent)', w: 2.4, area: true},
+  {pts: DATA.daily.map(d => d.o), color: 'var(--raw)', w: .8},
+  {pts: DATA.daily.map(d => d.a), color: 'var(--accent)', w: 2.5, area: true},
 ], DATA.daily.map(d => d.d),
   i => `<b>${dlabel(DATA.daily[i].d)}</b><br>Orders: <b>${DATA.daily[i].o}</b>` +
        (DATA.daily[i].a != null ? `<br>7-day avg: <b>${DATA.daily[i].a}</b>` : ''));
@@ -386,7 +399,7 @@ lineChart('daily', 1000, 300, [
   const peak = DATA.dow.reduce((a, b) => b.avg > a.avg ? b : a);
   DATA.dow.forEach((d, i) => {
     const bx = P.l + i * bw + bw * .18, w = bw * .64;
-    const col = d.day === peak.day ? 'var(--green)' : 'var(--accent)';
+    const col = d.day === peak.day ? 'var(--accent)' : 'var(--bar)';
     const bar = el('path', {d:
       `M${bx} ${H - P.b} V${y(d.avg) + 4} q0 -4 4 -4 h${w - 8} q4 0 4 4 V${H - P.b} Z`,
       fill: col}, svg);
