@@ -110,9 +110,17 @@ body {
   margin: 0; background: var(--page); color: var(--ink);
   font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-.wrap { max-width: 1060px; margin: 0 auto; padding: 32px 20px 56px; }
-header h1 { margin: 0 0 2px; font-size: 24px; letter-spacing: -.01em; }
-.sub { color: var(--ink-2); margin: 0; }
+.wrap { max-width: 1060px; margin: 0 auto; padding: 36px 20px 56px; }
+header { display: flex; gap: 16px; align-items: center; }
+.mark { width: 46px; height: 46px; border-radius: 13px; flex: none;
+  background: linear-gradient(135deg, var(--accent), var(--seq6));
+  position: relative; overflow: hidden; }
+.mark::before, .mark::after { content: ""; position: absolute; width: 3.5px;
+  height: 44px; background: rgba(255,255,255,.85); border-radius: 2px; top: -5px; }
+.mark::before { left: 18px; transform: rotate(20deg); }
+.mark::after { left: 27px; transform: rotate(28deg); }
+header h1 { margin: 0 0 2px; font-size: 25px; letter-spacing: -.015em; }
+.sub { color: var(--ink-2); margin: 0; font-size: 14px; }
 .eyebrow {
   font-size: 11px; font-weight: 600; letter-spacing: .09em;
   text-transform: uppercase; color: var(--muted); margin: 0 0 10px;
@@ -120,14 +128,17 @@ header h1 { margin: 0 0 2px; font-size: 24px; letter-spacing: -.01em; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr));
   gap: 14px; margin: 26px 0; }
 .tile { background: var(--surface); border: 1px solid var(--ring);
-  border-radius: 10px; padding: 14px 16px; }
-.tile .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  border-radius: 12px; padding: 15px 17px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.tile .v { font-size: 28px; font-weight: 700; letter-spacing: -.01em;
+  font-variant-numeric: tabular-nums; }
+.spark { margin-top: 8px; }
 .tile .l { font-size: 13px; color: var(--ink-2); }
 .tile .n { font-size: 12px; color: var(--muted); }
 .grid2 { display: grid; grid-template-columns: 1fr 1.25fr; gap: 14px; }
 @media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
 .card { background: var(--surface); border: 1px solid var(--ring);
-  border-radius: 10px; padding: 18px 18px 12px; margin: 0 0 14px; }
+  border-radius: 12px; padding: 20px 20px 14px; margin: 0 0 14px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.04); }
 .card h2 { margin: 0 0 2px; font-size: 15px; }
 .card .hint { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; }
 svg { display: block; width: 100%; height: auto; }
@@ -159,9 +170,12 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
 </style>
 <div class="wrap">
 <header>
-  <p class="eyebrow">Demand forecasting · Germantown, TN</p>
-  <h1>Asian Eatery — Delivery Demand Dashboard</h1>
-  <p class="sub">Uber Eats + DoorDash orders, <span id="range"></span> · simulated data calibrated from public restaurant sales</p>
+  <div class="mark" aria-hidden="true"></div>
+  <div>
+    <p class="eyebrow" style="margin-bottom:3px">Demand forecasting · Germantown, TN</p>
+    <h1>Asian Eatery — Delivery Demand Dashboard</h1>
+    <p class="sub">Uber Eats + DoorDash orders, <span id="range"></span> · simulated data calibrated from public restaurant sales</p>
+  </div>
 </header>
 
 <div class="tiles" id="tiles"></div>
@@ -262,14 +276,31 @@ document.getElementById('tiles').innerHTML = [
 ].map(([l, v, n]) =>
   `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div></div>`
 ).join('');
+(function sparkline() {
+  const vals = DATA.daily.map(d => d.a).filter(v => v != null).slice(-90);
+  const svg = el('svg', {viewBox: '0 0 200 30', class: 'spark'},
+    document.querySelector('.tile'));
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const pts = vals.map((v, i) =>
+    `${(i / (vals.length - 1) * 198 + 1).toFixed(1)},${(27 - (v - lo) / (hi - lo) * 24).toFixed(1)}`);
+  el('polyline', {points: pts.join(' '), fill: 'none',
+    stroke: 'var(--accent)', 'stroke-width': 1.5}, svg);
+  const [ex, ey] = pts[pts.length - 1].split(',');
+  el('circle', {cx: ex, cy: ey, r: 2.5, fill: 'var(--accent)'}, svg);
+})();
 
 // ---- generic line chart with hover
-function lineChart(mount, W, H, seriesList, xDates, tipFn) {
+function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
   const P = {l: 34, r: 8, t: 8, b: 22};
   const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, document.getElementById(mount));
   const ymax = Math.max(...seriesList.flatMap(s => s.pts.filter(v => v != null))) * 1.08;
   const x = i => P.l + i / (xDates.length - 1) * (W - P.l - P.r);
   const y = v => H - P.b - v / ymax * (H - P.t - P.b);
+  const step = (W - P.l - P.r) / (xDates.length - 1);
+  for (const b of (opts.bands || []))
+    el('rect', {x: Math.max(P.l, x(b[0]) - step / 2), y: P.t,
+      width: (b[1] - b[0] + 1) * step, height: H - P.t - P.b,
+      fill: 'var(--grid)', opacity: .38}, svg);
   for (const v of niceTicks(ymax, 5)) {
     el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
       stroke: 'var(--grid)', 'stroke-width': .7}, svg);
@@ -284,14 +315,31 @@ function lineChart(mount, W, H, seriesList, xDates, tipFn) {
         .textContent = MON[d.getMonth()] + (d.getMonth() === 0 ? ' ' + d.getFullYear() : '');
     }});
   for (const s of seriesList) {
-    let dd = '', pen = false;
+    let dd = '', pen = false, firstX = null, lastX = null;
     s.pts.forEach((v, i) => {
       if (v == null) { pen = false; return; }
       dd += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); pen = true;
+      if (firstX == null) firstX = x(i);
+      lastX = x(i);
     });
+    if (s.area && firstX != null)
+      el('path', {d: dd + `L${lastX.toFixed(1)} ${H - P.b} L${firstX.toFixed(1)} ${H - P.b} Z`,
+        fill: s.color, opacity: .09, stroke: 'none'}, svg);
     el('path', {d: dd, fill: 'none', stroke: s.color,
       'stroke-width': s.w, opacity: s.op || 1,
       'stroke-dasharray': s.dash || 'none', 'stroke-linejoin': 'round'}, svg);
+  }
+  if (opts.divider != null) {
+    el('line', {x1: x(opts.divider), x2: x(opts.divider), y1: P.t, y2: H - P.b,
+      stroke: 'var(--baseline)', 'stroke-dasharray': '3 4'}, svg);
+    el('text', {x: x(opts.divider) + 6, y: P.t + 10}, svg)
+      .textContent = opts.dividerLabel || '';
+  }
+  if (opts.endDot) {
+    const v = seriesList[opts.endDot.s].pts[opts.endDot.i];
+    if (v != null) el('circle', {cx: x(opts.endDot.i), cy: y(v), r: 4,
+      fill: seriesList[opts.endDot.s].color,
+      stroke: 'var(--surface)', 'stroke-width': 2}, svg);
   }
   const cursor = el('line', {y1: P.t, y2: H - P.b, stroke: 'var(--baseline)',
     'stroke-width': 1, opacity: 0}, svg);
@@ -318,7 +366,7 @@ function lineChart(mount, W, H, seriesList, xDates, tipFn) {
 // ---- daily trend
 lineChart('daily', 1000, 300, [
   {pts: DATA.daily.map(d => d.o), color: 'var(--accent)', w: 1, op: .38},
-  {pts: DATA.daily.map(d => d.a), color: 'var(--accent)', w: 2.4},
+  {pts: DATA.daily.map(d => d.a), color: 'var(--accent)', w: 2.4, area: true},
 ], DATA.daily.map(d => d.d),
   i => `<b>${dlabel(DATA.daily[i].d)}</b><br>Orders: <b>${DATA.daily[i].o}</b>` +
        (DATA.daily[i].a != null ? `<br>7-day avg: <b>${DATA.daily[i].a}</b>` : ''));
@@ -392,6 +440,15 @@ lineChart('daily', 1000, 300, [
   const n = DATA.recent.length;
   const fc = xs.map((_, i) => i >= n - 1
     ? (i === n - 1 ? DATA.recent[n - 1].o : DATA.forecast[i - n].f) : null);
+  const bands = [];
+  xs.forEach((ds, i) => {
+    const dw = new Date(ds + 'T12:00').getDay();
+    if (dw === 6 || dw === 0) {
+      if (bands.length && i === bands[bands.length - 1][1] + 1)
+        bands[bands.length - 1][1] = i;
+      else bands.push([i, i]);
+    }
+  });
   lineChart('fc', 1000, 300, [
     {pts: actual, color: 'var(--ink)', w: 1.8},
     {pts: fc, color: 'var(--accent)', w: 2.4, dash: '6 5'},
@@ -399,7 +456,8 @@ lineChart('daily', 1000, 300, [
     if (i < n) return `<b>${dlabel(xs[i])}</b><br>Orders: <b>${actual[i]}</b>`;
     const f = DATA.forecast[i - n];
     return `<b>${dlabel(f.d)}</b><br>Forecast: <b>${f.f}</b><br>${f.tier}`;
-  });
+  }, {bands, divider: n - 1, dividerLabel: 'forecast →',
+      endDot: {i: xs.length - 1, s: 1}});
 })();
 
 // ---- tables

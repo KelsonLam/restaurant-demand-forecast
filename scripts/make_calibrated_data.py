@@ -29,6 +29,19 @@ UBEREATS_SHARE = 0.58
 TARGET_AVG_TICKET = 41.0          # family-size Asian delivery orders
 CLOSED_HOLIDAYS = {"Thanksgiving", "Christmas Day"}
 
+# The pizza base data is dine-in/carryout shaped (Friday peak, big weekday
+# lunch). Delivery channels skew weekend + dinner, so these profiles replace
+# the base day-of-week mix and reweight the hourly shape. Mean of DOW = 1.0.
+DOW_DELIVERY = {0: 0.86, 1: 0.83, 2: 0.88, 3: 0.96, 4: 1.16, 5: 1.24, 6: 1.07}
+
+
+def hour_weight(hour: int, dow: int) -> float:
+    if hour <= 13:                      # lunch: much lighter for delivery
+        return 0.85 if dow >= 5 else 0.55
+    if hour <= 16:
+        return 0.8
+    return 1.35                         # dinner dominates
+
 rng = np.random.default_rng(7)
 
 
@@ -50,17 +63,18 @@ def load_base_patterns():
 
     daily = orders.groupby(orders["ts"].dt.date).size()
     idx = pd.to_datetime(pd.Series(daily.index))
-    dow_index = daily.groupby(idx.dt.dayofweek.values).mean()
-    dow_index /= dow_index.mean()
     month_index = daily.groupby(idx.dt.month.values).mean()
     month_index /= month_index.mean()
+    dow_index = pd.Series(DOW_DELIVERY)
 
-    # Hour histogram per weekday, clipped to delivery hours 11:00-21:59
+    # Hour histogram per weekday from the base data, clipped to delivery
+    # hours 11:00-21:59, then reweighted toward a dinner-heavy profile.
     hour_probs = {}
     for d in range(7):
         h = orders.loc[(orders["dow"] == d) & orders["hour"].between(11, 21),
                        "hour"].value_counts().reindex(range(11, 22), fill_value=0)
-        hour_probs[d] = (h / h.sum()).values
+        w = h.astype(float) * [hour_weight(hr, d) for hr in h.index]
+        hour_probs[d] = (w / w.sum()).values
 
     ticket_scale = TARGET_AVG_TICKET / orders["total"].mean()
     return dow_index, month_index, hour_probs, orders["total"].values, ticket_scale
@@ -140,8 +154,8 @@ def main() -> None:
         "Demand shape: Maven Analytics 'Pizza Place Sales' public dataset\n"
         "(hour-of-day, day-of-week, month-of-year patterns from 21k real orders).\n"
         "Rescaled to a delivery-only Asian restaurant profile (~34 orders/day,\n"
-        "~$41 avg ticket) and modulated by real Germantown, TN weather\n"
-        "(Open-Meteo) and TN holidays.\n"
+        "~$41 avg ticket, weekend- and dinner-skewed per delivery norms) and\n"
+        "modulated by real Germantown, TN weather (Open-Meteo) and TN holidays.\n"
         "Replace these files with real Uber Eats Manager / DoorDash Merchant\n"
         "Portal exports when available; the pipeline runs unchanged.\n",
         encoding="utf-8")

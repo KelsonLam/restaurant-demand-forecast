@@ -1,4 +1,4 @@
 model,MAE,MAPE_%
-SARIMA,8.38,23.9
-XGBoost,8.98,27.8
-Seasonal naive,13.46,38.6
+SARIMA,6.66,20.1
+XGBoost,8.84,25.9
+Seasonal naive,10.54,31.7

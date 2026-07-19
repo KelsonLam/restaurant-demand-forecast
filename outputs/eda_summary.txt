@@ -1,7 +1,7 @@
 Days covered: 2025-07-01 to 2026-07-15 (380 days)
-Total orders: 12,944   Total revenue: $532,261
-Average orders/day: 34.1   Average revenue/day: $1,401
-Busiest weekday on average: Friday (39.2 orders)
-Slowest weekday on average: Sunday (29.2 orders)
-Holiday-day average: 29.4 vs non-holiday 34.2
-Rainy-day average: 36.1 vs dry 33.4
+Total orders: 13,317   Total revenue: $550,492
+Average orders/day: 35.0   Average revenue/day: $1,449
+Busiest weekday on average: Saturday (46.1 orders)
+Slowest weekday on average: Wednesday (28.7 orders)
+Holiday-day average: 30.0 vs non-holiday 35.2
+Rainy-day average: 39.6 vs dry 33.5
