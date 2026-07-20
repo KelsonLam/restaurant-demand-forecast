@@ -246,6 +246,18 @@ svg text { font: 11px 'Archivo', sans-serif; fill: var(--taupe); }
 .models { margin-top: 10px; font-size: 13px; color: var(--cream-2); }
 .models b { color: var(--cream); }
 
+/* accessible table view */
+.tview { margin-top: 14px; }
+.tview summary { cursor: pointer; color: var(--taupe); font-size: 12.5px; }
+.tview summary:hover { color: var(--cream-2); }
+.tblwrap { overflow-x: auto; margin-top: 12px; }
+.tview table { border-collapse: collapse; font-size: 13px; min-width: 420px; }
+.tview th { text-align: left; color: var(--taupe); font-weight: 600;
+  font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+  padding: 6px 14px 6px 0; border-bottom: 1px solid var(--rule); }
+.tview td { padding: 6px 14px 6px 0; border-bottom: 1px solid var(--rule-soft);
+  color: var(--cream-2); font-variant-numeric: tabular-nums; }
+
 footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
   line-height: 1.6; }
 
@@ -324,6 +336,11 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
   </div>
   <div class="rail" id="rail"></div>
   <p class="models" id="models"></p>
+  <details class="tview">
+    <summary>Table view — forecast &amp; weekday averages</summary>
+    <div class="tblwrap"><table id="fctable"></table></div>
+    <div class="tblwrap"><table id="dowtable"></table></div>
+  </details>
 </section>
 
 <hr class="dbl">
@@ -342,8 +359,10 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
 <div class="tt" id="tt"></div>
 <script>
 const DATA = __DATA__;
-const CH_COLOR = {all: '#C9A24B', 'dine-in': '#E9C77E', takeout: '#9C8E7B',
-                  ubereats: '#C96F4A', doordash: '#B25B57'};
+// Validated categorical set (dataviz six-checks, dark surface #201A16):
+// slot order is the CVD-safety mechanism — do not reshuffle casually.
+const CH_COLOR = {all: '#B08A3E', 'dine-in': '#A874C9', takeout: '#57A063',
+                  ubereats: '#6E8FD0', doordash: '#C96F4A'};
 const RAMP = ['#241E19', '#3A2F22', '#54422A', '#6E5530', '#8A6A38',
               '#A98440', '#C9A24B', '#E9C77E'];
 const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -684,6 +703,20 @@ function renderHeat() {
     .join(' · ');
   document.getElementById('models').innerHTML =
     `Forecast by <b>${DATA.bestModel}</b> — 28-day holdout error (MAPE): ${m}`;
+
+  const tierWord = {BUSY: 'Busy — add staff', STEADY: 'Steady',
+                    LIGHT: 'Light — minimum staff'};
+  document.getElementById('fctable').innerHTML =
+    '<tr><th>Date</th><th>Day</th><th>Forecast (orders)</th><th>Staffing</th></tr>' +
+    DATA.forecast.map(f =>
+      `<tr><td>${dlabel(f.d)}</td><td>${f.day}</td><td>${f.f}</td>` +
+      `<td>${tierWord[f.tier]}</td></tr>`).join('');
+  document.getElementById('dowtable').innerHTML =
+    '<tr><th>Avg orders</th>' + DAYS.map(d =>
+      `<th>${d.slice(0, 3)}</th>`).join('') + '</tr>' +
+    DATA.order.map(ch =>
+      `<tr><td>${DATA.labels[ch]}</td>` + DATA.channels[ch].dow.map(v =>
+        `<td>${v}</td>`).join('') + '</tr>').join('');
 })();
 
 // ---------- render
