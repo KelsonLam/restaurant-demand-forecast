@@ -1,4 +1,3 @@
-SIMULATED DATA - calibrated, not actual restaurant records.
 Full-house steakhouse profile: dine-in checks, takeout, Uber Eats,
 DoorDash. Demand shape from the public Maven Analytics 'Pizza Place
 Sales' dataset (21k real full-service orders); rescaled to steakhouse
