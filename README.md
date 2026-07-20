@@ -8,6 +8,8 @@ forecasting models, and renders the results as an interactive dashboard,
 
 Live dashboard: https://kelsonlam.github.io/restaurant-demand-forecast/
 
+![Dashboard demo: page load reveal, then switching between All house, Dine-in, Uber Eats, and DoorDash](docs/media/dashboard-demo.gif)
+
 ## Why this project
 
 Restaurants run on thin margins and unpredictable foot traffic. Knowing how
@@ -35,9 +37,28 @@ docs/             <- GitHub Pages copy of the dashboard (do not edit directly)
 
 ## Using real order data
 
-**POS exports (dine-in / takeout):** export an order-level report (check
-number, opened-at timestamp, check total) and save it to `data/raw/` with
-`dinein` or `takeout` in the filename.
+**Dine-in and takeout (POS export):** every point-of-sale system can export
+an order or check-level report; the exact menu differs by vendor, but the
+shape is the same everywhere. Common paths:
+
+- **Toast:** Toast Web, Reporting, then Sales Summary or the Order Details
+  report, export as CSV.
+- **Square for Restaurants:** Square Dashboard, Reports, then Transactions or
+  Itemized Sales, export as CSV.
+- **Clover:** Clover Web Dashboard, Reports, then Orders, export as CSV.
+- **Aloha / NCR, Micros, or another system:** look for Reporting or Back
+  Office, then an order-level or check-level export (not a summary rollup).
+
+Whatever the source, the export needs at minimum an order timestamp column
+(named something like "Opened At", "Order Time", or "Date") and a total
+column (named something like "Check Total", "Total", or "Net Sales").
+Column names are auto-detected from a candidate list in
+`scripts/01_ingest_clean.py`; if your export uses a different name for
+either column, rename that column to match one of the candidates.
+
+Save dine-in exports to `data/raw/` with `dinein` (or `dine_in` / `dine-in`)
+somewhere in the filename, and takeout exports with `takeout` in the
+filename. Multiple files are fine (for example, one export per month).
 
 **Uber Eats:** log in to Uber Eats Manager, go to Reports, request an "Order
 History" report over the widest date range available, and save the CSV to

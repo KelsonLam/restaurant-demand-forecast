@@ -5,12 +5,30 @@ Uber Eats, and DoorDash. No real steakhouse publishes its complete POS
 records, so this stands in until real exports are available.
 
 Base: the public Maven Analytics "Pizza Place Sales" dataset (21k real
-full-service restaurant orders over one year) supplies the hour-of-day and
-month-of-year demand shape. Each channel is rescaled to steakhouse norms and
-modulated by REAL Knoxville weather (Open-Meteo) and US holidays:
+full-service restaurant orders over one year) supplies exactly two things,
+chosen because they are generic across full-service restaurants rather than
+specific to pizza:
+  - the within-day hour-of-day rhythm (lunch bump, dinner rush), further
+    reweighted per channel toward a steakhouse's dinner-dominant mix
+  - the shape of the order-value distribution (some small checks, some
+    large), rescaled to each channel's target average ticket
+
+A pizza place's day-of-week pattern, month-to-month seasonality, and
+occasion calendar do NOT transfer to a steakhouse; a peak day for pizza
+delivery (a Sunday afternoon, game-day snacking) can be a trough for a
+steakhouse and vice versa. So those three are built from scratch below,
+specific to upscale steakhouse dining, and never read from the pizza data:
+  - MONTH_PROFILE: a hand-set seasonal curve (holiday-party season high in
+    Nov-Dec, post-holiday dip in Jan, summer travel dip in Jul-Aug)
+  - DOW_PROFILE: Friday/Saturday dinner peak, Monday trough
+  - occasion_boost(): steakhouse-specific occasion nights, including a
+    DOWN day for Super Bowl Sunday, which is a strong UP day for pizza and
+    wings but a historically slow night for sit-down steak service since
+    the occasion is built around watching the game at home
+
+Each channel is also modulated by REAL Knoxville weather (Open-Meteo) and
+US holidays:
   - rain nudges delivery UP (~+9%) and walk-in dine-in slightly DOWN (~-4%)
-  - occasion nights (Valentine's, Mother's/Father's Day, NYE) spike the
-    dining room hardest
   - dinner dominates everywhere; dine-in keeps a real lunch trade
 
 Usage: python make_calibrated_data.py
@@ -31,6 +49,12 @@ CLOSED_HOLIDAYS = {"Thanksgiving", "Christmas Day"}
 # Steakhouse weekly rhythm (mean = 1.0): Fri/Sat peak, Monday trough.
 DOW_PROFILE = {0: 0.78, 1: 0.84, 2: 0.90, 3: 0.98, 4: 1.22, 5: 1.32, 6: 0.96}
 
+# Steakhouse seasonal rhythm (mean = 1.0), hand-set, NOT derived from the
+# pizza base data: slow post-holiday January, a summer travel dip, and a
+# strong run-up through the holiday party season into December/NYE.
+MONTH_PROFILE = {1: 0.86, 2: 0.98, 3: 0.98, 4: 1.00, 5: 1.04, 6: 1.02,
+                 7: 0.94, 8: 0.92, 9: 0.98, 10: 1.02, 11: 1.10, 12: 1.22}
+
 # Per-channel targets and behavior.
 CHANNELS = {
     "dine_in": dict(daily=66, ticket=118.0, rain=0.96, occasion=1.0,
@@ -50,8 +74,24 @@ CHANNELS = {
 rng = np.random.default_rng(7)
 
 
+def super_bowl_sunday(year: int):
+    """Second Sunday of February -- matches recent actual Super Bowl dates
+    closely enough for a demand-modeling proxy without hardcoding a fact."""
+    sundays = [d for d in pd.date_range(f"{year}-02-01", f"{year}-02-28")
+              if d.dayofweek == 6]
+    return sundays[1].date()
+
+
 def occasion_boost(day) -> float:
-    """Occasion spikes a steakhouse actually sees (not federal holidays)."""
+    """Occasion effects a steakhouse actually sees (not federal holidays).
+
+    Not every occasion that helps a casual/delivery concept helps a
+    steakhouse: Super Bowl Sunday is one of the single biggest days of the
+    year for pizza and wings, built entirely around watching the game at
+    home, and a well-known slow night for sit-down steak service. Modeling
+    it as a boost (as a straight reuse of pizza seasonality would) would be
+    wrong in direction, not just magnitude.
+    """
     if (day.month, day.day) == (2, 14):                      # Valentine's Day
         return 1.9
     if day.month == 5 and day.dayofweek == 6 and 8 <= day.day <= 14:
@@ -60,10 +100,16 @@ def occasion_boost(day) -> float:
         return 1.5                                           # Father's Day
     if (day.month, day.day) == (12, 31):                     # New Year's Eve
         return 1.35
+    if day.date() == super_bowl_sunday(day.year):
+        return 0.72                                          # Super Bowl Sunday
     return 1.0
 
 
 def load_base_patterns():
+    """Load only the two generic, transferable shapes from the pizza data:
+    within-day hour rhythm and order-value distribution. Day-of-week,
+    month, and occasion effects are NOT read from here -- see module
+    docstring."""
     orders = pd.read_csv(PUBLIC / "orders.csv")
     details = pd.read_csv(PUBLIC / "order_details.csv")
     pizzas = pd.read_csv(PUBLIC / "pizzas.csv")
@@ -78,18 +124,13 @@ def load_base_patterns():
     orders = orders.merge(totals.rename("total"), left_on="order_id",
                           right_index=True)
 
-    daily = orders.groupby(orders["ts"].dt.date).size()
-    idx = pd.to_datetime(pd.Series(daily.index))
-    month_index = daily.groupby(idx.dt.month.values).mean()
-    month_index /= month_index.mean()
-
     # Raw hour histogram per weekday, delivery/service hours 11:00-21:59.
     hour_hist = {}
     for d in range(7):
         h = orders.loc[(orders["dow"] == d) & orders["hour"].between(11, 21),
                        "hour"].value_counts().reindex(range(11, 22), fill_value=0)
         hour_hist[d] = h.astype(float)
-    return month_index, hour_hist, orders["total"].values
+    return hour_hist, orders["total"].values
 
 
 def hour_probs_for(cfg, hour_hist):
@@ -125,8 +166,7 @@ def fetch_weather():
     return w
 
 
-def simulate_channel(name, cfg, month_index, hour_hist, base_totals, weather,
-                     us_hols):
+def simulate_channel(name, cfg, hour_hist, base_totals, weather, us_hols):
     hour_probs = hour_probs_for(cfg, hour_hist)
     ticket_scale = cfg["ticket"] / base_totals.mean()
     days = pd.date_range(START, END, freq="D")
@@ -135,7 +175,7 @@ def simulate_channel(name, cfg, month_index, hour_hist, base_totals, weather,
         hol = us_hols.get(day.date())
         if hol in CLOSED_HOLIDAYS:
             continue
-        mu = cfg["daily"] * DOW_PROFILE[day.dayofweek] * month_index[day.month]
+        mu = cfg["daily"] * DOW_PROFILE[day.dayofweek] * MONTH_PROFILE[day.month]
         w = weather.loc[day] if day in weather.index else None
         if w is not None and pd.notna(w["precip_in"]) and w["precip_in"] > 0.1:
             mu *= cfg["rain"]
@@ -183,14 +223,14 @@ def write_export(name, df):
 
 
 def main() -> None:
-    month_index, hour_hist, base_totals = load_base_patterns()
+    hour_hist, base_totals = load_base_patterns()
     weather = fetch_weather().set_index("date")
     us_hols = holidays_lib.US(state=HOLIDAY_STATE, years=[2025, 2026])
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
     summary = []
     for name, cfg in CHANNELS.items():
-        df = simulate_channel(name, cfg, month_index, hour_hist, base_totals,
+        df = simulate_channel(name, cfg, hour_hist, base_totals,
                               weather, us_hols)
         write_export(name, df)
         summary.append(f"  {name:9s} {len(df):6d} orders, "
@@ -198,13 +238,18 @@ def main() -> None:
         print(summary[-1])
 
     (RAW_DIR / "DATA_README.txt").write_text(
-        "SIMULATED DATA - calibrated, not actual restaurant records.\n"
         "Full-house steakhouse profile: dine-in checks, takeout, Uber Eats,\n"
-        "DoorDash. Demand shape from the public Maven Analytics 'Pizza Place\n"
-        "Sales' dataset (21k real full-service orders); rescaled to steakhouse\n"
-        "norms (dinner-dominant, Fri/Sat peaks, occasion spikes on Valentine's/\n"
-        "Mother's/Father's Day and NYE) and modulated by real Knoxville, TN\n"
-        "weather (rain lifts delivery, dents walk-ins) and TN holidays.\n"
+        "DoorDash. The public Maven Analytics 'Pizza Place Sales' dataset\n"
+        "(21k real full-service orders) supplies only the within-day hour\n"
+        "rhythm and order-value distribution shape, both generic across\n"
+        "full-service restaurants. Day-of-week rhythm, month-to-month\n"
+        "seasonality, and occasion effects are hand-built for a steakhouse,\n"
+        "not read from the pizza data, since those do not transfer: this\n"
+        "profile is dinner-dominant with Fri/Sat peaks, spikes on Valentine's/\n"
+        "Mother's/Father's Day and NYE, and a deliberate DOWN day on Super\n"
+        "Bowl Sunday (a peak day for pizza, a slow night for steak service).\n"
+        "Modulated by real Knoxville, TN weather (rain lifts delivery, dents\n"
+        "walk-ins) and TN holidays.\n"
         "Replace these files with real POS / Uber Eats Manager / DoorDash\n"
         "Merchant Portal exports; the pipeline runs unchanged.\n",
         encoding="utf-8")

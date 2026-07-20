@@ -30,13 +30,17 @@ LABELS = {"all": "All house", "dine-in": "Dine-in", "takeout": "Takeout",
           "ubereats": "Uber Eats", "doordash": "DoorDash"}
 
 
-def channel_block(daily, orders, precip):
+def channel_block(daily, orders, weather):
     daily = daily.sort_values("date").reset_index(drop=True)
     daily["a"] = daily["orders"].rolling(7).mean().round(1)
+    daily = daily.merge(weather, on="date", how="left")
     rows = [{"d": d.strftime("%Y-%m-%d"), "o": int(o), "r": round(r),
-             "a": None if pd.isna(a) else float(a)}
-            for d, o, r, a in zip(daily["date"], daily["orders"],
-                                  daily["revenue"], daily["a"])]
+             "a": None if pd.isna(a) else float(a),
+             "pr": None if pd.isna(pr) else round(float(pr), 2),
+             "tm": None if pd.isna(tm) else round(float(tm))}
+            for d, o, r, a, pr, tm in zip(
+                daily["date"], daily["orders"], daily["revenue"], daily["a"],
+                daily["precip_in"], daily["temp_max_f"])]
 
     dow = (daily.assign(day=daily["date"].dt.day_name())
            .groupby("day")["orders"].mean().reindex(DAY_ORDER).round(1))
@@ -51,10 +55,9 @@ def channel_block(daily, orders, precip):
     ph = f"{peak_hour - 12 if peak_hour > 12 else peak_hour}–" \
          f"{peak_hour - 11 if peak_hour >= 12 else peak_hour + 1} pm"
 
-    merged = daily.merge(precip, on="date", how="left")
-    rainy = merged["precip_in"] > 0.1
-    rain_lift = (merged.loc[rainy, "orders"].mean()
-                 / merged.loc[~rainy, "orders"].mean() - 1) * 100
+    rainy = daily["precip_in"] > 0.1
+    rain_lift = (daily.loc[rainy, "orders"].mean()
+                 / daily.loc[~rainy, "orders"].mean() - 1) * 100
 
     return {
         "daily": rows,
@@ -80,7 +83,7 @@ def build_payload():
     orders["day_name"] = orders["ordered_at"].dt.day_name()
     feats = pd.read_csv(PROCESSED_DIR / "daily_features.csv",
                         parse_dates=["date"])
-    precip = feats[["date", "precip_in"]]
+    weather = feats[["date", "precip_in", "temp_max_f"]]
     forecast = pd.read_csv(OUTPUT_DIR / "staffing_recommendations.csv",
                            parse_dates=["date"])
     scores = pd.read_csv(OUTPUT_DIR / "model_comparison.csv")
@@ -89,7 +92,7 @@ def build_payload():
     for ch in CHANNELS:
         d = sales[sales["platform"] == ch]
         o = orders if ch == "all" else orders[orders["platform"] == ch]
-        channels[ch] = channel_block(d.copy(), o, precip)
+        channels[ch] = channel_block(d.copy(), o, weather)
 
     total_rev = channels["all"]["stats"]["totalRev"]
     for ch in CHANNELS:
@@ -211,6 +214,13 @@ svg text { font: 11px 'Archivo', sans-serif; fill: var(--taupe); }
 .rhythm { display: grid; grid-template-columns: 1fr 1.3fr; gap: 34px;
   margin-top: 8px; }
 @media (max-width: 820px) { .rhythm { grid-template-columns: 1fr; } }
+.weather { display: grid; grid-template-columns: 1fr 1fr; gap: 34px;
+  margin-top: 12px; }
+@media (max-width: 820px) { .weather { grid-template-columns: 1fr; } }
+.chartlabel { font-size: 11px; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--taupe); margin: 0 0 6px; }
+.chartlabel-r { color: var(--cream-2); letter-spacing: normal;
+  text-transform: none; font-variant-numeric: tabular-nums; }
 
 /* tooltip */
 .tt { position: fixed; pointer-events: none; z-index: 9;
@@ -331,6 +341,30 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
     <div class="fade" id="dow"></div>
     <div class="fade" id="heat"></div>
   </div>
+</section>
+
+<hr class="dbl">
+
+<section>
+  <div class="sect">
+    <h2 class="display">Weather sensitivity</h2>
+    <span class="note">each dot is one night of service; hover for the date</span>
+  </div>
+  <div class="weather">
+    <div>
+      <p class="chartlabel">Rainfall <span class="chartlabel-r" id="rCorrRain"></span></p>
+      <div class="fade" id="wxRain"></div>
+    </div>
+    <div>
+      <p class="chartlabel">Temperature <span class="chartlabel-r" id="rCorrTemp"></span></p>
+      <div class="fade" id="wxTemp"></div>
+    </div>
+  </div>
+  <p class="hint" style="margin-top:10px">r is the linear correlation against
+    the exact rainfall amount. The modeled effect is a threshold, any rain
+    above 0.1 in triggers the same lift, so a weak linear r here is expected
+    and does not contradict the "Rainy days" figure above, which compares
+    rainy nights to dry ones directly.</p>
 </section>
 
 <hr class="dbl">
@@ -682,6 +716,70 @@ function renderHeat() {
       rx: 1.5, fill: RAMP[b]}, svg);
 }
 
+// ---------- weather scatter: one dot per night, x = weather, y = orders
+function pearson(xs, ys) {
+  const n = xs.length;
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = ys.reduce((a, b) => a + b, 0) / n;
+  let num = 0, dx2 = 0, dy2 = 0;
+  for (let i = 0; i < n; i++) {
+    const dx = xs[i] - mx, dy = ys[i] - my;
+    num += dx * dy; dx2 += dx * dx; dy2 += dy * dy;
+  }
+  return num / Math.sqrt(dx2 * dy2 || 1);
+}
+
+function scatterChart(mount, points, opts) {
+  const box = document.getElementById(mount); box.innerHTML = '';
+  const W = 400, H = 260, P = {l: 38, r: 10, t: 10, b: 30};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, box);
+  const xmax = Math.max(...points.map(p => p.x)) * 1.08 || 1;
+  const ymax = Math.max(...points.map(p => p.y)) * 1.1 || 1;
+  const x = v => P.l + v / xmax * (W - P.l - P.r);
+  const y = v => H - P.b - v / ymax * (H - P.t - P.b);
+  for (const v of niceTicks(ymax, 4)) {
+    el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
+      stroke: 'var(--grid)', 'stroke-width': 1}, svg);
+    el('text', {x: P.l - 6, y: y(v) + 3, 'text-anchor': 'end',
+      class: 'num'}, svg).textContent = v;
+  }
+  for (const v of niceTicks(xmax, 5)) {
+    if (v === 0 && !opts.zeroTick) continue;
+    el('line', {x1: x(v), x2: x(v), y1: P.t, y2: H - P.b,
+      stroke: 'var(--grid)', 'stroke-width': 1}, svg);
+    el('text', {x: x(v), y: H - 10, 'text-anchor': 'middle',
+      class: 'num'}, svg).textContent = opts.xFmt ? opts.xFmt(v) : v;
+  }
+  el('text', {x: (P.l + W - P.r) / 2, y: H - 1, 'text-anchor': 'middle',
+    fill: 'var(--taupe)'}, svg).textContent = opts.xLabel;
+  for (const p of points) {
+    const dot = el('circle', {cx: x(p.x), cy: y(p.y), r: 4,
+      fill: opts.color, opacity: .55, stroke: 'var(--espresso)',
+      'stroke-width': 1}, svg);
+    dot.addEventListener('mousemove', ev => showTT(
+      `<b>${dlabel(p.d)}</b><br>${opts.xLabel}: <b>${opts.xFmt ? opts.xFmt(p.x) : p.x}</b>` +
+      `<br>Orders: <b>${p.y}</b>`, ev.clientX, ev.clientY));
+    dot.addEventListener('mouseleave', hideTT);
+  }
+}
+
+function renderWeather() {
+  const daily = cur().daily;
+  const rain = daily.filter(d => d.pr != null).map(d => ({x: d.pr, y: d.o, d: d.d}));
+  const temp = daily.filter(d => d.tm != null).map(d => ({x: d.tm, y: d.o, d: d.d}));
+  const color = CH_COLOR[state.ch];
+  scatterChart('wxRain', rain, {color, xLabel: 'inches of rain',
+    xFmt: v => v.toFixed(1), zeroTick: true});
+  scatterChart('wxTemp', temp, {color, xLabel: 'degrees F (high)'});
+  const rr = pearson(rain.map(p => p.x), rain.map(p => p.y));
+  const rt = pearson(temp.map(p => p.x), temp.map(p => p.y));
+  const word = r => Math.abs(r) < 0.1 ? 'negligible' : Math.abs(r) < 0.3 ? 'weak' : 'moderate';
+  document.getElementById('rCorrRain').textContent =
+    `r = ${rr.toFixed(2)} (${word(rr)})`;
+  document.getElementById('rCorrTemp').textContent =
+    `r = ${rt.toFixed(2)} (${word(rt)})`;
+}
+
 // ---------- ticket rail
 (function renderTickets() {
   const rail = document.getElementById('rail');
@@ -730,7 +828,7 @@ document.getElementById('range').textContent = DATA.range;
 function renderRhythm() { renderDow(); renderHeat(); }
 function renderAll() {
   renderLedger(); renderTrend(); renderOverview(); renderRhythm();
-  syncPressed();
+  renderWeather(); syncPressed();
 }
 renderAll();
 </script>
