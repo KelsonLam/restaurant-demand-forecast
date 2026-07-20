@@ -117,7 +117,7 @@ def font_b64(name):
 
 
 TEMPLATE = r"""<meta charset="utf-8">
-<title>Knoxville Steakhouse — Demand Ledger</title>
+<title>Knoxville Steakhouse - Demand Ledger</title>
 <style>
 @font-face {
   font-family: 'Fraunces'; font-weight: 600; font-display: swap;
@@ -284,7 +284,7 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
 <header class="masthead">
   <p class="over">Est. 2026 · Knoxville, Tennessee</p>
   <h1 class="display">The Demand Ledger</h1>
-  <p class="sub">A steakhouse's full house — dine-in, takeout &amp; delivery ·
+  <p class="sub">A steakhouse's full house, dine-in, takeout &amp; delivery ·
     <span id="range" class="num"></span> · simulated data calibrated from
     public restaurant sales</p>
 </header>
@@ -343,7 +343,7 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
   <div class="rail" id="rail"></div>
   <p class="models" id="models"></p>
   <details class="tview">
-    <summary>Table view — forecast &amp; weekday averages</summary>
+    <summary>Table view: forecast &amp; weekday averages</summary>
     <div class="tblwrap"><table id="fctable"></table></div>
     <div class="tblwrap"><table id="dowtable"></table></div>
   </details>
@@ -352,7 +352,7 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
 <hr class="dbl">
 
 <footer>
-  Data: <b>simulated</b> — no steakhouse publishes its complete POS records, so
+  Data: <b>simulated</b>. No steakhouse publishes its complete POS records, so
   demand shape is calibrated from the public Maven Analytics “Pizza Place Sales”
   dataset (21k real full-service orders) and rescaled to steakhouse norms:
   dinner-dominant service, Friday–Saturday peaks, occasion spikes on
@@ -366,7 +366,7 @@ footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
 <script>
 const DATA = __DATA__;
 // Validated categorical set (dataviz six-checks, dark surface #201A16):
-// slot order is the CVD-safety mechanism — do not reshuffle casually.
+// slot order is the CVD-safety mechanism, do not reshuffle casually.
 const CH_COLOR = {all: '#B08A3E', 'dine-in': '#A874C9', takeout: '#57A063',
                   ubereats: '#6E8FD0', doordash: '#C96F4A'};
 const RAMP = ['#241E19', '#3A2F22', '#54422A', '#6E5530', '#8A6A38',
@@ -708,10 +708,10 @@ function renderHeat() {
     `${i === 0 ? '<b>' : ''}${r.model} ${r['MAPE_%']}%${i === 0 ? '</b>' : ''}`)
     .join(' · ');
   document.getElementById('models').innerHTML =
-    `Forecast by <b>${DATA.bestModel}</b> — 28-day holdout error (MAPE): ${m}`;
+    `Forecast by <b>${DATA.bestModel}</b>, 28-day holdout error (MAPE): ${m}`;
 
-  const tierWord = {BUSY: 'Busy — add staff', STEADY: 'Steady',
-                    LIGHT: 'Light — minimum staff'};
+  const tierWord = {BUSY: 'Busy, add staff', STEADY: 'Steady',
+                    LIGHT: 'Light, minimum staff'};
   document.getElementById('fctable').innerHTML =
     '<tr><th>Date</th><th>Day</th><th>Forecast (orders)</th><th>Staffing</th></tr>' +
     DATA.forecast.map(f =>
