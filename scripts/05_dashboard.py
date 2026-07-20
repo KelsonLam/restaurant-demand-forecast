@@ -7,6 +7,10 @@ Reads data/processed + outputs CSVs and writes outputs/dashboard.html --
 a single self-contained "demand ledger" page (fonts embedded as data URIs,
 no external requests). Deliberately single-theme: a candlelit steakhouse
 look, per the design brief.
+
+Also copies the page to docs/index.html, which GitHub Pages serves live
+at https://<user>.github.io/<repo>/ -- keep that path in sync so the
+published link always reflects the latest run.
 """
 
 import base64
@@ -15,6 +19,8 @@ import json
 import pandas as pd
 
 from config import OUTPUT_DIR, PROCESSED_DIR, PROJECT_ROOT
+
+DOCS_DIR = PROJECT_ROOT / "docs"
 
 DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday",
              "Friday", "Saturday", "Sunday"]
@@ -740,6 +746,11 @@ def main() -> None:
     out = OUTPUT_DIR / "dashboard.html"
     out.write_text(html, encoding="utf-8")
     print(f"Wrote {out} ({out.stat().st_size / 1024:.0f} KB)")
+
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    (DOCS_DIR / "index.html").write_text(html, encoding="utf-8")
+    (DOCS_DIR / ".nojekyll").touch()
+    print(f"Wrote {DOCS_DIR / 'index.html'} (GitHub Pages source)")
 
 
 if __name__ == "__main__":
