@@ -22,11 +22,12 @@ from config import PROCESSED_DIR, RAW_DIR, SAMPLE_DIR
 
 DATE_CANDIDATES = [
     "time customer ordered", "timestamp local date", "order date", "local order date",
-    "date ordered", "order placed at", "timestamp", "date", "created at", "order time",
+    "date ordered", "order placed at", "opened at", "timestamp", "date", "created at",
+    "order time",
 ]
 MONEY_CANDIDATES = [
     "food sales", "subtotal", "order subtotal", "sales (incl. tax)", "sales excl. tax",
-    "order total", "total", "gross sales", "net sales",
+    "check total", "order total", "total", "gross sales", "net sales",
 ]
 STATUS_CANDIDATES = ["order status", "status", "final order status"]
 CANCEL_WORDS = ("cancel", "refund", "fail", "unfulfilled", "rejected")
@@ -52,8 +53,13 @@ def load_export(path) -> pd.DataFrame:
         platform = "ubereats"
     elif "doordash" in name or "dd_" in name:
         platform = "doordash"
+    elif "dinein" in name or "dine_in" in name or "dine-in" in name:
+        platform = "dine-in"
+    elif "takeout" in name:
+        platform = "takeout"
     else:
-        print(f"  ! Skipping {path.name}: filename must contain 'uber' or 'doordash'")
+        print(f"  ! Skipping {path.name}: filename must contain 'uber', "
+              "'doordash', 'dinein', or 'takeout'")
         return pd.DataFrame()
 
     df = pd.read_csv(path)

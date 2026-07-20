@@ -4,259 +4,357 @@ Usage:
     python 05_dashboard.py
 
 Reads data/processed + outputs CSVs and writes outputs/dashboard.html --
-a single self-contained file, no external libraries, light + dark themes.
+a single self-contained "demand ledger" page (fonts embedded as data URIs,
+no external requests). Deliberately single-theme: a candlelit steakhouse
+look, per the design brief.
 """
 
+import base64
 import json
 
 import pandas as pd
 
-from config import OUTPUT_DIR, PROCESSED_DIR
+from config import OUTPUT_DIR, PROCESSED_DIR, PROJECT_ROOT
 
 DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday",
              "Friday", "Saturday", "Sunday"]
+HOURS = list(range(11, 22))
+CHANNELS = ["all", "dine-in", "takeout", "ubereats", "doordash"]
+LABELS = {"all": "All house", "dine-in": "Dine-in", "takeout": "Takeout",
+          "ubereats": "Uber Eats", "doordash": "DoorDash"}
 
 
-def build_payload() -> dict:
-    df = pd.read_csv(PROCESSED_DIR / "daily_features.csv", parse_dates=["date"])
+def channel_block(daily, orders, precip):
+    daily = daily.sort_values("date").reset_index(drop=True)
+    daily["a"] = daily["orders"].rolling(7).mean().round(1)
+    rows = [{"d": d.strftime("%Y-%m-%d"), "o": int(o), "r": round(r),
+             "a": None if pd.isna(a) else float(a)}
+            for d, o, r, a in zip(daily["date"], daily["orders"],
+                                  daily["revenue"], daily["a"])]
+
+    dow = (daily.assign(day=daily["date"].dt.day_name())
+           .groupby("day")["orders"].mean().reindex(DAY_ORDER).round(1))
+
+    heat = (orders[orders["hour"].isin(HOURS)]
+            .groupby(["day_name", "hour"]).size()
+            .unstack(fill_value=0)
+            .reindex(DAY_ORDER).reindex(columns=HOURS, fill_value=0))
+
+    hour_totals = heat.sum(axis=0)
+    peak_hour = int(hour_totals.idxmax())
+    ph = f"{peak_hour - 12 if peak_hour > 12 else peak_hour}–" \
+         f"{peak_hour - 11 if peak_hour >= 12 else peak_hour + 1} pm"
+
+    merged = daily.merge(precip, on="date", how="left")
+    rainy = merged["precip_in"] > 0.1
+    rain_lift = (merged.loc[rainy, "orders"].mean()
+                 / merged.loc[~rainy, "orders"].mean() - 1) * 100
+
+    return {
+        "daily": rows,
+        "dow": [float(v) for v in dow.values],
+        "heat": heat.values.tolist(),
+        "stats": {
+            "avgOrders": round(daily["orders"].mean(), 1),
+            "avgRev": round(daily["revenue"].mean()),
+            "avgTicket": round(daily["revenue"].sum()
+                               / max(daily["orders"].sum(), 1), 2),
+            "totalRev": round(daily["revenue"].sum()),
+            "peakDay": dow.idxmax(),
+            "peakHour": ph,
+            "rainLift": round(rain_lift, 1),
+        },
+    }
+
+
+def build_payload():
+    sales = pd.read_csv(PROCESSED_DIR / "daily_sales.csv", parse_dates=["date"])
     orders = pd.read_csv(PROCESSED_DIR / "orders_clean.csv",
                          parse_dates=["ordered_at"])
+    orders["day_name"] = orders["ordered_at"].dt.day_name()
+    feats = pd.read_csv(PROCESSED_DIR / "daily_features.csv",
+                        parse_dates=["date"])
+    precip = feats[["date", "precip_in"]]
     forecast = pd.read_csv(OUTPUT_DIR / "staffing_recommendations.csv",
                            parse_dates=["date"])
     scores = pd.read_csv(OUTPUT_DIR / "model_comparison.csv")
 
-    df = df.sort_values("date").reset_index(drop=True)
-    df["roll7"] = df["orders"].rolling(7).mean().round(1)
+    channels = {}
+    for ch in CHANNELS:
+        d = sales[sales["platform"] == ch]
+        o = orders if ch == "all" else orders[orders["platform"] == ch]
+        channels[ch] = channel_block(d.copy(), o, precip)
 
-    daily = [{"d": d.strftime("%Y-%m-%d"), "o": int(o),
-              "a": None if pd.isna(a) else float(a)}
-             for d, o, a in zip(df["date"], df["orders"], df["roll7"])]
+    total_rev = channels["all"]["stats"]["totalRev"]
+    for ch in CHANNELS:
+        channels[ch]["stats"]["share"] = round(
+            channels[ch]["stats"]["totalRev"] / total_rev * 100, 1)
 
-    dow = (df.groupby("day_name")["orders"].mean().reindex(DAY_ORDER)
-           .round(1))
-
-    orders["day_name"] = orders["ordered_at"].dt.day_name()
-    hours = list(range(11, 22))
-    heat = (orders[orders["hour"].isin(hours)]
-            .groupby(["day_name", "hour"]).size().unstack(fill_value=0)
-            .reindex(DAY_ORDER).reindex(columns=hours, fill_value=0))
-
-    recent = df.tail(60)
-    fc = [{"d": d.strftime("%Y-%m-%d"), "f": float(f), "day": day, "tier": t}
-          for d, f, day, t in zip(forecast["date"], forecast["forecast_orders"],
+    tiers = {"Busy - add staff": "BUSY", "Normal": "STEADY",
+             "Slow - minimum staff": "LIGHT"}
+    fc = [{"d": d.strftime("%Y-%m-%d"), "f": round(float(f)),
+           "day": day, "tier": tiers.get(t, "STEADY")}
+          for d, f, day, t in zip(forecast["date"],
+                                  forecast["forecast_orders"],
                                   forecast["day_name"], forecast["staffing"])]
 
-    rainy = df["precip_in"] > 0.1 if "precip_in" in df else pd.Series(False, index=df.index)
-    return {
-        "range": f"{df['date'].min():%b %d, %Y} – {df['date'].max():%b %d, %Y}",
-        "stats": {
-            "avgOrders": round(df["orders"].mean(), 1),
-            "avgRevenue": round(df["revenue"].mean()),
-            "totalOrders": int(df["orders"].sum()),
-            "busiestDay": dow.idxmax(),
-            "busiestAvg": float(dow.max()),
-            "rainLift": round((df.loc[rainy, "orders"].mean()
-                               / df.loc[~rainy, "orders"].mean() - 1) * 100, 1),
-        },
-        "daily": daily,
-        "dow": [{"day": d, "avg": float(v)} for d, v in dow.items()],
-        "heat": {"days": DAY_ORDER, "hours": hours,
-                 "values": heat.values.tolist()},
-        "recent": [{"d": d.strftime("%Y-%m-%d"), "o": int(o)}
-                   for d, o in zip(recent["date"], recent["orders"])],
-        "forecast": fc,
-        "models": scores.to_dict(orient="records"),
-        "bestModel": scores.iloc[0]["model"],
-    }
+    span = f"{feats['date'].min():%B %Y} – {feats['date'].max():%B %Y}"
+    return {"range": span, "hours": HOURS, "order": CHANNELS,
+            "labels": LABELS, "channels": channels, "forecast": fc,
+            "models": scores.to_dict(orient="records"),
+            "bestModel": scores.iloc[0]["model"]}
+
+
+def font_b64(name):
+    p = PROJECT_ROOT / "assets" / "fonts" / name
+    return base64.b64encode(p.read_bytes()).decode()
 
 
 TEMPLATE = r"""<meta charset="utf-8">
-<title>Knoxville Steakhouse — Demand Forecast</title>
+<title>Knoxville Steakhouse — Demand Ledger</title>
 <style>
+@font-face {
+  font-family: 'Fraunces'; font-weight: 600; font-display: swap;
+  src: url(data:font/woff2;base64,__F_FRAUNCES__) format('woff2');
+}
+@font-face {
+  font-family: 'Archivo'; font-weight: 100 900; font-display: swap;
+  src: url(data:font/woff2;base64,__F_ARCHIVO__) format('woff2');
+}
 :root {
   color-scheme: dark;
-  --page: #0B0F19; --surface: #1E293B;
-  --ink: #F8FAFC; --ink-2: #CBD5E1; --muted: #94A3B8;
-  --grid: rgba(255,255,255,.05); --baseline: rgba(255,255,255,.14);
-  --ring: rgba(255,255,255,.06);
-  --accent: #2DD4BF; --accent-soft: rgba(45,212,191,.13);
-  --raw: rgba(255,255,255,.15); --bar: #475569;
-  --band: rgba(255,255,255,.03);
-  --chip-normal-bg: rgba(148,163,184,.14); --chip-normal: #CBD5E1;
-  --chip-slow-bg: rgba(148,163,184,.08); --chip-slow: #94A3B8;
-  --seq0:#152230; --seq1:#134E4A; --seq2:#115E59; --seq3:#0F766E;
-  --seq4:#0D9488; --seq5:#14B8A6; --seq6:#2DD4BF; --seq7:#99F6E4;
-  --shadow: 0 1px 2px rgba(0,0,0,.3);
-}
-@media (prefers-color-scheme: light) {
-  :root:where(:not([data-theme="dark"])) {
-    color-scheme: light;
-    --page: #F8FAFC; --surface: #FFFFFF;
-    --ink: #0F172A; --ink-2: #334155; --muted: #64748B;
-    --grid: rgba(15,23,42,.06); --baseline: rgba(15,23,42,.18);
-    --ring: rgba(15,23,42,.08);
-    --accent: #0D9488; --accent-soft: rgba(13,148,136,.12);
-    --raw: rgba(15,23,42,.22); --bar: #94A3B8;
-    --band: rgba(15,23,42,.035);
-    --chip-normal-bg: rgba(100,116,139,.12); --chip-normal: #475569;
-    --chip-slow-bg: rgba(100,116,139,.08); --chip-slow: #64748B;
-    --seq0:#F0FDFA; --seq1:#CCFBF1; --seq2:#99F6E4; --seq3:#5EEAD4;
-    --seq4:#2DD4BF; --seq5:#14B8A6; --seq6:#0D9488; --seq7:#0F766E;
-    --shadow: 0 1px 2px rgba(15,23,42,.05);
-  }
-}
-:root[data-theme="light"] {
-  color-scheme: light;
-  --page: #F8FAFC; --surface: #FFFFFF;
-  --ink: #0F172A; --ink-2: #334155; --muted: #64748B;
-  --grid: rgba(15,23,42,.06); --baseline: rgba(15,23,42,.18);
-  --ring: rgba(15,23,42,.08);
-  --accent: #0D9488; --accent-soft: rgba(13,148,136,.12);
-  --raw: rgba(15,23,42,.22); --bar: #94A3B8;
-  --band: rgba(15,23,42,.035);
-  --chip-normal-bg: rgba(100,116,139,.12); --chip-normal: #475569;
-  --chip-slow-bg: rgba(100,116,139,.08); --chip-slow: #64748B;
-  --seq0:#F0FDFA; --seq1:#CCFBF1; --seq2:#99F6E4; --seq3:#5EEAD4;
-  --seq4:#2DD4BF; --seq5:#14B8A6; --seq6:#0D9488; --seq7:#0F766E;
-  --shadow: 0 1px 2px rgba(15,23,42,.05);
+  --espresso: #201A16; --walnut: #2A231E; --walnut-2: #322A23;
+  --cream: #F3EAD9; --cream-2: #CBBFA9; --taupe: #9C8E7B;
+  --brass: #C9A24B; --brass-pale: #E9C77E; --copper: #C96F4A;
+  --wine: #B25B57;
+  --rule: rgba(243,234,217,.16); --rule-soft: rgba(243,234,217,.08);
+  --grid: rgba(243,234,217,.06);
 }
 * { box-sizing: border-box; }
+html { background: var(--espresso); }
 body {
-  margin: 0; background: var(--page); color: var(--ink);
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0; background: var(--espresso); color: var(--cream);
+  font: 400 15px/1.5 'Archivo', system-ui, sans-serif;
 }
-.wrap { max-width: 1060px; margin: 0 auto; padding: 36px 20px 56px; }
-header { display: flex; gap: 16px; align-items: center; }
-.mark { width: 46px; height: 46px; border-radius: 13px; flex: none;
-  background: linear-gradient(135deg, #2DD4BF, #0F766E);
-  position: relative; overflow: hidden; }
-.mark::before, .mark::after { content: ""; position: absolute; width: 3.5px;
-  height: 44px; background: rgba(255,255,255,.85); border-radius: 2px; top: -5px; }
-.mark::before { left: 18px; transform: rotate(20deg); }
-.mark::after { left: 27px; transform: rotate(28deg); }
-header h1 { margin: 0 0 2px; font-size: 25px; letter-spacing: -.015em; }
-.sub { color: var(--ink-2); margin: 0; font-size: 14px; }
-.eyebrow {
-  font-size: 11px; font-weight: 600; letter-spacing: .09em;
-  text-transform: uppercase; color: var(--muted); margin: 0 0 10px;
-}
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr));
-  gap: 14px; margin: 26px 0; }
-.tile { background: var(--surface); border: 1px solid var(--ring);
-  border-radius: 12px; padding: 18px 20px; box-shadow: var(--shadow);
-  display: flex; flex-direction: column; }
-.tile .v { font-size: 28px; font-weight: 700; letter-spacing: -.01em;
-  font-variant-numeric: tabular-nums; }
-.tile .l { font-size: 13px; color: var(--ink-2); }
-.tile .n { font-size: 12px; color: var(--muted); margin-top: auto;
-  padding-top: 8px; }
-.grid2 { display: grid; grid-template-columns: 1fr 1.25fr; gap: 14px; }
-@media (max-width: 820px) { .grid2 { grid-template-columns: 1fr; } }
-.card { background: var(--surface); border: 1px solid var(--ring);
-  border-radius: 12px; padding: 20px 20px 14px; margin: 0 0 14px;
-  box-shadow: var(--shadow); }
-.card h2 { margin: 0 0 2px; font-size: 15px; }
-.card .hint { font-size: 12.5px; color: var(--muted); margin: 0 0 8px; }
+.page { max-width: 1040px; margin: 0 auto; padding: 44px 22px 64px; }
+.display { font-family: 'Fraunces', Georgia, serif; font-weight: 600; }
+.num { font-variant-numeric: tabular-nums; }
+
+/* masthead: set like a menu cover */
+.masthead { text-align: center; padding-bottom: 22px; }
+.masthead .over { font-size: 11px; letter-spacing: .28em; color: var(--brass);
+  text-transform: uppercase; margin: 0 0 10px; }
+.masthead h1 { font-size: clamp(28px, 5vw, 38px); margin: 0 0 8px;
+  letter-spacing: .01em; }
+.masthead .sub { color: var(--taupe); font-size: 13.5px; margin: 0; }
+.dbl { border: none; border-top: 1px solid var(--rule); position: relative;
+  margin: 26px 0; }
+.dbl::after { content: ""; position: absolute; left: 0; right: 0; top: 3px;
+  border-top: 1px solid var(--rule-soft); }
+
+/* controls */
+.controls { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 3px;
+  overflow: hidden; }
+.seg button { background: none; border: none; color: var(--cream-2);
+  font: 500 12.5px 'Archivo', sans-serif; padding: 7px 13px; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 7px;
+  border-left: 1px solid var(--rule-soft); }
+.seg button:first-child { border-left: none; }
+.seg button:hover { background: var(--walnut); }
+.seg button[aria-pressed="true"] { background: var(--walnut-2);
+  color: var(--cream); }
+.seg .dot { width: 8px; height: 8px; border-radius: 50%; }
+.seg button:focus-visible, .chips button:focus-visible {
+  outline: 2px solid var(--brass); outline-offset: -2px; }
+
+/* section heads */
+.sect { display: flex; align-items: baseline; gap: 14px; margin: 6px 0 4px; }
+.sect h2 { font-size: 20px; margin: 0; }
+.sect .note { color: var(--taupe); font-size: 12.5px; }
+.sect .spacer { flex: 1; }
+
+/* ledger stats: menu dot-leader lines */
+.ledger { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 56px;
+  margin: 18px 0 6px; }
+@media (max-width: 760px) { .ledger { grid-template-columns: 1fr; } }
+.ledger h3 { grid-row: 1; font-size: 11px; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--brass); margin: 0 0 2px;
+  font-weight: 600; }
+.lrow { display: flex; align-items: baseline; opacity: 0; }
+.lrow .k { color: var(--cream-2); font-size: 14px; }
+.lrow .dots { flex: 1; border-bottom: 2px dotted rgba(243,234,217,.22);
+  margin: 0 10px 5px; min-width: 24px; }
+.lrow .v { font-size: 17px; font-weight: 600; }
+.lrow .v small { color: var(--taupe); font-weight: 400; font-size: 12px; }
+
+/* charts */
 svg { display: block; width: 100%; height: auto; }
-svg text { font: 11px system-ui, "Segoe UI", sans-serif; fill: var(--muted); }
-.legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--ink-2);
-  margin: 4px 0 2px; flex-wrap: wrap; }
+svg text { font: 11px 'Archivo', sans-serif; fill: var(--taupe); }
+.chartbox { margin: 10px 0 0; }
+.chips { display: flex; gap: 6px; }
+.chips button { background: none; border: 1px solid var(--rule);
+  border-radius: 3px; color: var(--cream-2); font: 500 12px 'Archivo';
+  padding: 4px 10px; cursor: pointer; }
+.chips button[aria-pressed="true"] { background: var(--walnut-2);
+  color: var(--cream); border-color: var(--rule); }
+.legend { display: flex; gap: 16px; font-size: 12.5px; color: var(--cream-2);
+  margin: 6px 0 0; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .sw { width: 14px; height: 3px; border-radius: 2px; display: inline-block; }
-.tt { position: fixed; pointer-events: none; z-index: 9; background: var(--surface);
-  border: 1px solid var(--ring); border-radius: 8px; padding: 7px 10px;
-  font-size: 12.5px; box-shadow: 0 4px 14px rgba(0,0,0,.14); display: none;
-  color: var(--ink-2); }
-.tt b { color: var(--ink); font-variant-numeric: tabular-nums; }
-.tblwrap { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
-th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px;
-  letter-spacing: .05em; text-transform: uppercase; padding: 7px 10px;
-  border-bottom: 1px solid var(--grid); }
-td { padding: 7px 10px; border-bottom: 1px solid var(--grid);
+.rhythm { display: grid; grid-template-columns: 1fr 1.3fr; gap: 34px;
+  margin-top: 8px; }
+@media (max-width: 820px) { .rhythm { grid-template-columns: 1fr; } }
+
+/* tooltip */
+.tt { position: fixed; pointer-events: none; z-index: 9;
+  background: var(--walnut-2); border: 1px solid var(--rule);
+  border-radius: 3px; padding: 7px 10px; font-size: 12.5px; display: none;
+  color: var(--cream-2); box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+.tt b { color: var(--cream); font-variant-numeric: tabular-nums; }
+
+/* ticket rail */
+.rail { display: flex; gap: 14px; overflow-x: auto; padding: 26px 4px 18px;
+  scroll-snap-type: x proximity; }
+.rail::-webkit-scrollbar { height: 8px; }
+.rail::-webkit-scrollbar-thumb { background: var(--walnut-2);
+  border-radius: 4px; }
+.ticket { flex: 0 0 128px; scroll-snap-align: start; background: var(--cream);
+  color: #2A2019; border-radius: 2px; padding: 12px 12px 14px;
+  position: relative; transform: rotate(var(--rot));
+  box-shadow: 0 8px 16px rgba(0,0,0,.35); opacity: 0; }
+.ticket::before { content: ""; position: absolute; left: 0; right: 0; top: 0;
+  border-top: 2px dashed rgba(42,32,25,.35); }
+.ticket::after { content: ""; position: absolute; top: -7px; left: 50%;
+  width: 34px; height: 9px; margin-left: -17px; background: var(--walnut-2);
+  border-radius: 2px; box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+.ticket .t-day { font-size: 11px; letter-spacing: .18em; font-weight: 600;
+  color: #7A6A55; margin-top: 4px; }
+.ticket .t-date { font-size: 13.5px; font-weight: 600; margin: 1px 0 8px; }
+.ticket .t-num { font-size: 34px; font-weight: 700; line-height: 1;
   font-variant-numeric: tabular-nums; }
-tr:last-child td { border-bottom: none; }
-.chip { display: inline-block; padding: 2px 9px; border-radius: 99px;
-  font-size: 12px; font-weight: 600; }
-.chip.busy { background: var(--accent-soft); color: var(--accent); }
-.chip.slow { background: var(--chip-slow-bg); color: var(--chip-slow); }
-.chip.normal { background: var(--chip-normal-bg); color: var(--chip-normal); }
-footer { color: var(--muted); font-size: 12.5px; margin-top: 26px;
-  border-top: 1px solid var(--grid); padding-top: 14px; }
+.ticket .t-unit { font-size: 10.5px; color: #7A6A55; margin: 2px 0 10px; }
+.stamp { display: inline-block; font-size: 11px; font-weight: 700;
+  letter-spacing: .14em; padding: 2px 7px; border: 2px solid;
+  border-radius: 2px; transform: rotate(-4deg); }
+.stamp.BUSY { color: #9E3B36; border-color: #9E3B36; }
+.stamp.STEADY { color: #7A6A55; border-color: #7A6A55; }
+.stamp.LIGHT { color: #A5988A; border-color: #A5988A;
+  border-style: dashed; }
+
+/* models table */
+.models { margin-top: 10px; font-size: 13px; color: var(--cream-2); }
+.models b { color: var(--cream); }
+
+footer { color: var(--taupe); font-size: 12.5px; margin-top: 8px;
+  line-height: 1.6; }
+
+/* motion */
+@keyframes rise { from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; } }
+@keyframes print { from { opacity: 0; transform: translateY(-16px)
+  rotate(var(--rot)); } to { opacity: 1; transform: rotate(var(--rot)); } }
+.lrow { animation: rise .5s calc(var(--d) * 70ms) both; }
+.ticket { animation: print .45s calc(var(--d) * 70ms + .2s) both; }
+.fade { animation: rise .6s .1s both; }
+@media (prefers-reduced-motion: reduce) {
+  .lrow, .ticket, .fade { animation: none; opacity: 1; }
+}
 </style>
-<div class="wrap">
-<header>
-  <div class="mark" aria-hidden="true"></div>
-  <div>
-    <p class="eyebrow" style="margin-bottom:3px">Demand forecasting · Knoxville, TN</p>
-    <h1>Knoxville Steakhouse — Delivery Demand Dashboard</h1>
-    <p class="sub">Uber Eats + DoorDash orders, <span id="range"></span> · simulated data calibrated from public restaurant sales</p>
-  </div>
+<div class="page">
+
+<header class="masthead">
+  <p class="over">Est. 2026 · Knoxville, Tennessee</p>
+  <h1 class="display">The Demand Ledger</h1>
+  <p class="sub">A steakhouse's full house — dine-in, takeout &amp; delivery ·
+    <span id="range" class="num"></span> · simulated data calibrated from
+    public restaurant sales</p>
 </header>
 
-<div class="tiles" id="tiles"></div>
+<div class="controls" id="chctl"></div>
 
-<div class="card">
-  <h2>Orders per day</h2>
-  <p class="hint">Daily delivery orders with 7-day average — hover for values</p>
+<hr class="dbl">
+
+<section>
+  <div class="sect">
+    <h2 class="display">The house, by the numbers</h2>
+    <span class="note" id="statnote"></span>
+  </div>
+  <div class="ledger" id="ledger"></div>
+</section>
+
+<hr class="dbl">
+
+<section>
+  <div class="sect">
+    <h2 class="display">The ledger</h2>
+    <span class="note">orders per day, with 7-day average</span>
+    <span class="spacer"></span>
+    <div class="chips" id="rangechips"></div>
+  </div>
   <div class="legend">
-    <span><i class="sw" style="background:var(--raw)"></i>Daily orders</span>
-    <span><i class="sw" style="background:var(--accent)"></i>7-day average</span>
+    <span><i class="sw" style="background:rgba(243,234,217,.25)"></i>Daily</span>
+    <span><i class="sw" id="avgsw" style="background:var(--brass)"></i>7-day average</span>
   </div>
-  <div id="daily"></div>
-</div>
+  <div class="chartbox fade" id="trend"></div>
+  <div class="chartbox" id="overview" title="Drag to zoom a date range"></div>
+</section>
 
-<div class="grid2">
-  <div class="card">
-    <h2>Average orders by weekday</h2>
-    <p class="hint">Peak day highlighted</p>
-    <div id="dow"></div>
-  </div>
-  <div class="card">
-    <h2>When orders arrive</h2>
-    <p class="hint">Total orders by hour and weekday — see the fewer→more scale</p>
-    <div id="heat"></div>
-  </div>
-</div>
+<hr class="dbl">
 
-<div class="card">
-  <h2>Next 14 days — forecast</h2>
-  <p class="hint">Best model: <b id="bestm"></b>, chosen on a 28-day holdout</p>
-  <div class="legend">
-    <span><i class="sw" style="background:var(--ink)"></i>Actual (last 60 days)</span>
-    <span><i class="sw" style="background:var(--accent)"></i>Forecast</span>
+<section>
+  <div class="sect">
+    <h2 class="display">Service rhythm</h2>
+    <span class="note">when the house fills</span>
+    <span class="spacer"></span>
+    <div class="chips" id="dayview"></div>
   </div>
-  <div id="fc"></div>
-</div>
+  <div class="rhythm">
+    <div class="fade" id="dow"></div>
+    <div class="fade" id="heat"></div>
+  </div>
+</section>
 
-<div class="grid2">
-  <div class="card">
-    <h2>Model comparison</h2>
-    <p class="hint">Error on the last 28 days (held out)</p>
-    <div class="tblwrap"><table id="models"></table></div>
+<hr class="dbl">
+
+<section>
+  <div class="sect">
+    <h2 class="display">Tomorrow's tickets</h2>
+    <span class="note">14-day forecast for the whole house, tiered for staffing</span>
   </div>
-  <div class="card">
-    <h2>Staffing plan</h2>
-    <p class="hint">Forecast day tiered against historical volume terciles</p>
-    <div class="tblwrap"><table id="staff"></table></div>
-  </div>
-</div>
+  <div class="rail" id="rail"></div>
+  <p class="models" id="models"></p>
+</section>
+
+<hr class="dbl">
 
 <footer>
-  Data: <b>simulated</b> — demand shape calibrated from the public Maven Analytics
-  “Pizza Place Sales” dataset (21k orders), rescaled to a delivery-only upscale
-  steakhouse profile (dinner-dominant, Fri/Sat peaks, occasion spikes on
-  Valentine’s, Mother’s and Father’s Day) and modulated by real Knoxville, TN
-  weather (Open-Meteo) and TN holidays. Models: seasonal naive, SARIMA, XGBoost.
-  Built July 2026; pipeline accepts real Uber Eats / DoorDash exports unchanged.
+  Data: <b>simulated</b> — no steakhouse publishes its complete POS records, so
+  demand shape is calibrated from the public Maven Analytics “Pizza Place Sales”
+  dataset (21k real full-service orders) and rescaled to steakhouse norms:
+  dinner-dominant service, Friday–Saturday peaks, occasion spikes on
+  Valentine’s, Mother’s and Father’s Day, real Knoxville weather (rain lifts
+  delivery, dents walk-ins) and Tennessee holidays. Forecasts: seasonal naive
+  vs SARIMA vs XGBoost on a 28-day holdout. The pipeline accepts real POS,
+  Uber Eats Manager and DoorDash exports unchanged.
 </footer>
 </div>
 <div class="tt" id="tt"></div>
 <script>
 const DATA = __DATA__;
-const tt = document.getElementById('tt');
+const CH_COLOR = {all: '#C9A24B', 'dine-in': '#E9C77E', takeout: '#9C8E7B',
+                  ubereats: '#C96F4A', doordash: '#B25B57'};
+const RAMP = ['#241E19', '#3A2F22', '#54422A', '#6E5530', '#8A6A38',
+              '#A98440', '#C9A24B', '#E9C77E'];
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAYS = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+const N = DATA.channels.all.daily.length;
+const state = {ch: 'all', win: [0, N - 1], dayView: 'all'};
 const fmt = new Intl.NumberFormat('en-US');
+const tt = document.getElementById('tt');
 const NS = 'http://www.w3.org/2000/svg';
+let gradSeq = 0;
+
 function el(tag, attrs, parent) {
   const e = document.createElementNS(NS, tag);
   for (const k in attrs) e.setAttribute(k, attrs[k]);
@@ -265,236 +363,347 @@ function el(tag, attrs, parent) {
 }
 function showTT(html, x, y) {
   tt.innerHTML = html; tt.style.display = 'block';
-  const w = tt.offsetWidth;
-  tt.style.left = Math.min(x + 14, innerWidth - w - 8) + 'px';
+  tt.style.left = Math.min(x + 14, innerWidth - tt.offsetWidth - 8) + 'px';
   tt.style.top = (y + 14) + 'px';
 }
 function hideTT() { tt.style.display = 'none'; }
+function dlabel(ds) { const d = new Date(ds + 'T12:00');
+  return MON[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear(); }
 function niceTicks(max, n) {
   const step = Math.pow(10, Math.floor(Math.log10(max / n)));
   const mult = [1, 2, 5, 10].find(m => max / (m * step) <= n) || 10;
-  const s = mult * step, out = [];
-  for (let v = 0; v <= max; v += s) out.push(v);
+  const out = []; for (let v = 0; v <= max; v += mult * step) out.push(v);
   return out;
 }
-const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-function dlabel(ds) { const d = new Date(ds + 'T12:00');
-  return MON[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear(); }
+const cur = () => DATA.channels[state.ch];
 
-// ---- stat tiles
-const S = DATA.stats;
-document.getElementById('range').textContent = DATA.range;
-document.getElementById('bestm').textContent = DATA.bestModel;
-document.getElementById('tiles').innerHTML = [
-  ['Avg orders / day', S.avgOrders, fmt.format(S.totalOrders) + ' orders total'],
-  ['Avg revenue / day', '$' + fmt.format(S.avgRevenue), 'delivery channels only'],
-  ['Busiest weekday', S.busiestDay, S.busiestAvg.toFixed(1) + ' orders on average'],
-  ['Rainy-day lift', (S.rainLift >= 0 ? '+' : '') + S.rainLift + '%', 'orders vs dry days'],
-].map(([l, v, n]) =>
-  `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div><div class="n">${n}</div></div>`
-).join('');
+// ---------- channel control
+(function () {
+  const seg = document.createElement('div'); seg.className = 'seg';
+  seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', 'Channel');
+  for (const ch of DATA.order) {
+    const b = document.createElement('button');
+    b.innerHTML = `<span class="dot" style="background:${CH_COLOR[ch]}"></span>` +
+      DATA.labels[ch];
+    b.onclick = () => { state.ch = ch; renderAll(); };
+    b.dataset.ch = ch;
+    seg.appendChild(b);
+  }
+  document.getElementById('chctl').appendChild(seg);
+})();
 
-// ---- generic line chart with hover
-let gradSeq = 0;
-function lineChart(mount, W, H, seriesList, xDates, tipFn, opts = {}) {
-  const P = {l: 34, r: 8, t: 8, b: 22};
-  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, document.getElementById(mount));
-  const ymax = Math.max(...seriesList.flatMap(s => s.pts.filter(v => v != null))) * 1.08;
-  const x = i => P.l + i / (xDates.length - 1) * (W - P.l - P.r);
-  const y = v => H - P.b - v / ymax * (H - P.t - P.b);
-  const step = (W - P.l - P.r) / (xDates.length - 1);
-  for (const b of (opts.bands || []))
-    el('rect', {x: Math.max(P.l, x(b[0]) - step / 2), y: P.t,
-      width: (b[1] - b[0] + 1) * step, height: H - P.t - P.b,
-      fill: 'var(--band)'}, svg);
-  for (const v of niceTicks(ymax, 5)) {
-    el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
-      stroke: 'var(--grid)', 'stroke-width': .7}, svg);
-    el('text', {x: P.l - 6, y: y(v) + 3, 'text-anchor': 'end'}, svg)
-      .textContent = v;
+// ---------- range chips
+const PRESETS = [['30 d', 30], ['90 d', 90], ['6 mo', 183], ['Full', N]];
+(function () {
+  const box = document.getElementById('rangechips');
+  for (const [label, days] of PRESETS) {
+    const b = document.createElement('button');
+    b.textContent = label; b.dataset.days = days;
+    b.onclick = () => { state.win = [Math.max(0, N - days), N - 1]; renderAll(); };
+    box.appendChild(b);
   }
-  const monthSeen = {};
-  xDates.forEach((ds, i) => {
-    const d = new Date(ds + 'T12:00'), key = d.getFullYear() + '-' + d.getMonth();
-    if (!monthSeen[key] && d.getDate() <= 7) { monthSeen[key] = 1;
-      el('text', {x: x(i), y: H - 6, 'text-anchor': 'middle'}, svg)
-        .textContent = MON[d.getMonth()] + (d.getMonth() === 0 ? ' ' + d.getFullYear() : '');
-    }});
-  for (const s of seriesList) {
-    let dd = '', pen = false, firstX = null, lastX = null;
-    s.pts.forEach((v, i) => {
-      if (v == null) { pen = false; return; }
-      dd += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); pen = true;
-      if (firstX == null) firstX = x(i);
-      lastX = x(i);
-    });
-    if (s.area && firstX != null) {
-      const gid = 'ag' + (++gradSeq);
-      const g = el('linearGradient', {id: gid, x1: 0, y1: 0, x2: 0, y2: 1}, svg);
-      el('stop', {offset: '0%',
-        style: `stop-color:${s.color};stop-opacity:.20`}, g);
-      el('stop', {offset: '100%',
-        style: `stop-color:${s.color};stop-opacity:0`}, g);
-      el('path', {d: dd + `L${lastX.toFixed(1)} ${H - P.b} L${firstX.toFixed(1)} ${H - P.b} Z`,
-        fill: `url(#${gid})`, stroke: 'none'}, svg);
-    }
-    el('path', {d: dd, fill: 'none', stroke: s.color,
-      'stroke-width': s.w, opacity: s.op || 1,
-      'stroke-dasharray': s.dash || 'none', 'stroke-linejoin': 'round'}, svg);
+})();
+
+// ---------- day-view chips
+(function () {
+  const box = document.getElementById('dayview');
+  for (const [label, key] of [['Every day', 'all'], ['Weekdays', 'wd'],
+                              ['Weekends', 'we']]) {
+    const b = document.createElement('button');
+    b.textContent = label; b.dataset.view = key;
+    b.onclick = () => { state.dayView = key; renderRhythm(); syncPressed(); };
+    box.appendChild(b);
   }
-  if (opts.divider != null) {
-    el('line', {x1: x(opts.divider), x2: x(opts.divider), y1: P.t, y2: H - P.b,
-      stroke: 'var(--baseline)', 'stroke-dasharray': '3 4'}, svg);
-    el('text', {x: x(opts.divider) + 6, y: P.t + 10}, svg)
-      .textContent = opts.dividerLabel || '';
-  }
-  if (opts.endDot) {
-    const v = seriesList[opts.endDot.s].pts[opts.endDot.i];
-    if (v != null) el('circle', {cx: x(opts.endDot.i), cy: y(v), r: 4,
-      fill: seriesList[opts.endDot.s].color,
-      stroke: 'var(--surface)', 'stroke-width': 2}, svg);
-  }
-  const cursor = el('line', {y1: P.t, y2: H - P.b, stroke: 'var(--baseline)',
-    'stroke-width': 1, opacity: 0}, svg);
-  const dots = seriesList.map(s => el('circle', {r: 3.5, fill: s.color,
-    stroke: 'var(--surface)', 'stroke-width': 2, opacity: 0}, svg));
-  svg.addEventListener('mousemove', ev => {
-    const r = svg.getBoundingClientRect();
-    const px = (ev.clientX - r.left) / r.width * W;
-    const i = Math.max(0, Math.min(xDates.length - 1,
-      Math.round((px - P.l) / (W - P.l - P.r) * (xDates.length - 1))));
-    cursor.setAttribute('x1', x(i)); cursor.setAttribute('x2', x(i));
-    cursor.setAttribute('opacity', 1);
-    seriesList.forEach((s, k) => {
-      const v = s.pts[i];
-      dots[k].setAttribute('opacity', v == null ? 0 : 1);
-      if (v != null) { dots[k].setAttribute('cx', x(i)); dots[k].setAttribute('cy', y(v)); }
-    });
-    showTT(tipFn(i), ev.clientX, ev.clientY);
-  });
-  svg.addEventListener('mouseleave', () => { hideTT();
-    cursor.setAttribute('opacity', 0); dots.forEach(d => d.setAttribute('opacity', 0)); });
+})();
+
+function syncPressed() {
+  document.querySelectorAll('#chctl button').forEach(b =>
+    b.setAttribute('aria-pressed', b.dataset.ch === state.ch));
+  const span = state.win[1] - state.win[0] + 1;
+  document.querySelectorAll('#rangechips button').forEach(b =>
+    b.setAttribute('aria-pressed',
+      Math.abs(span - Math.min(+b.dataset.days, N)) < 2));
+  document.querySelectorAll('#dayview button').forEach(b =>
+    b.setAttribute('aria-pressed', b.dataset.view === state.dayView));
 }
 
-// ---- daily trend
-lineChart('daily', 1000, 300, [
-  {pts: DATA.daily.map(d => d.o), color: 'var(--raw)', w: .8},
-  {pts: DATA.daily.map(d => d.a), color: 'var(--accent)', w: 2.5, area: true},
-], DATA.daily.map(d => d.d),
-  i => `<b>${dlabel(DATA.daily[i].d)}</b><br>Orders: <b>${DATA.daily[i].o}</b>` +
-       (DATA.daily[i].a != null ? `<br>7-day avg: <b>${DATA.daily[i].a}</b>` : ''));
+// ---------- ledger stats
+function renderLedger() {
+  const s = cur().stats;
+  document.getElementById('statnote').textContent =
+    DATA.labels[state.ch] + (state.ch === 'all' ? '' :
+      ` · ${s.share}% of house revenue`);
+  const rows = [
+    ['HOW MUCH', [
+      [state.ch === 'dine-in' ? 'Checks per day' : 'Orders per day',
+       `<span class="num">${s.avgOrders}</span>`],
+      ['Revenue per day', `<span class="num">$${fmt.format(s.avgRev)}</span>`],
+      ['Average check', `<span class="num">$${fmt.format(Math.round(s.avgTicket))}</span>`],
+      ['Share of house', `<span class="num">${s.share}%</span>`],
+    ]],
+    ['WHEN', [
+      ['Peak day', s.peakDay],
+      ['Peak hour', s.peakHour],
+      ['Rainy days', `<span class="num">${s.rainLift >= 0 ? '+' : '−'}${Math.abs(s.rainLift)}%</span> <small>vs dry</small>`],
+      ['Season covered', `<span class="num">${DATA.range}</span>`],
+    ]],
+  ];
+  let html = '', d = 0;
+  for (const [title, items] of rows) {
+    html += `<div><h3>${title}</h3>` + items.map(([k, v]) =>
+      `<div class="lrow" style="--d:${d++}"><span class="k">${k}</span>` +
+      `<span class="dots"></span><span class="v">${v}</span></div>`
+    ).join('') + '</div>';
+  }
+  document.getElementById('ledger').innerHTML = html;
+}
 
-// ---- weekday bars
-(function () {
-  const W = 440, H = 260, P = {l: 34, r: 8, t: 18, b: 24};
-  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, document.getElementById('dow'));
-  const max = Math.max(...DATA.dow.map(d => d.avg)) * 1.12;
+// ---------- trend chart with crosshair
+function renderTrend() {
+  const box = document.getElementById('trend'); box.innerHTML = '';
+  const daily = cur().daily.slice(state.win[0], state.win[1] + 1);
+  const color = CH_COLOR[state.ch];
+  document.getElementById('avgsw').style.background = color;
+  const W = 1000, H = 280, P = {l: 40, r: 10, t: 10, b: 24};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, box);
+  const ymax = Math.max(...daily.map(d => d.o)) * 1.08 || 1;
+  const x = i => P.l + i / Math.max(daily.length - 1, 1) * (W - P.l - P.r);
+  const y = v => H - P.b - v / ymax * (H - P.t - P.b);
+  for (const v of niceTicks(ymax, 5)) {
+    el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
+      stroke: 'var(--grid)', 'stroke-width': 1}, svg);
+    el('text', {x: P.l - 7, y: y(v) + 3, 'text-anchor': 'end',
+      class: 'num'}, svg).textContent = v;
+  }
+  // x labels: months when wide, days when narrow
+  const span = daily.length;
+  if (span > 130) {
+    const seen = {};
+    daily.forEach((r, i) => {
+      const d = new Date(r.d + 'T12:00'),
+            k = d.getFullYear() + '-' + d.getMonth();
+      if (!seen[k] && d.getDate() <= 7) { seen[k] = 1;
+        el('text', {x: x(i), y: H - 6, 'text-anchor': 'middle'}, svg)
+          .textContent = MON[d.getMonth()] +
+            (d.getMonth() === 0 ? ' ' + d.getFullYear() : '');
+      }});
+  } else {
+    const every = Math.ceil(span / 7);
+    daily.forEach((r, i) => { if (i % every === 0) {
+      const d = new Date(r.d + 'T12:00');
+      el('text', {x: x(i), y: H - 6, 'text-anchor': 'middle'}, svg)
+        .textContent = MON[d.getMonth()] + ' ' + d.getDate();
+    }});
+  }
+  // raw daily line
+  let dd = '';
+  daily.forEach((r, i) => { dd += (i ? 'L' : 'M') + x(i).toFixed(1) + ' '
+    + y(r.o).toFixed(1); });
+  el('path', {d: dd, fill: 'none', stroke: 'rgba(243,234,217,.20)',
+    'stroke-width': .9, 'stroke-linejoin': 'round'}, svg);
+  // 7-day average + soft gradient area
+  let ad = '', pen = false, fx = null, lx = null;
+  daily.forEach((r, i) => {
+    if (r.a == null) { pen = false; return; }
+    ad += (pen ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(r.a).toFixed(1);
+    pen = true; if (fx == null) fx = x(i); lx = x(i);
+  });
+  if (fx != null) {
+    const gid = 'g' + (++gradSeq);
+    const g = el('linearGradient', {id: gid, x1: 0, y1: 0, x2: 0, y2: 1}, svg);
+    el('stop', {offset: '0%', style: `stop-color:${color};stop-opacity:.18`}, g);
+    el('stop', {offset: '100%', style: `stop-color:${color};stop-opacity:0`}, g);
+    el('path', {d: ad + `L${lx} ${H - P.b} L${fx} ${H - P.b} Z`,
+      fill: `url(#${gid})`}, svg);
+    el('path', {d: ad, fill: 'none', stroke: color, 'stroke-width': 2.4,
+      'stroke-linejoin': 'round'}, svg);
+  }
+  // crosshair
+  const cursor = el('line', {y1: P.t, y2: H - P.b,
+    stroke: 'rgba(243,234,217,.3)', 'stroke-width': 1, opacity: 0}, svg);
+  const dot = el('circle', {r: 3.5, fill: color, stroke: 'var(--espresso)',
+    'stroke-width': 2, opacity: 0}, svg);
+  svg.addEventListener('mousemove', ev => {
+    const rc = svg.getBoundingClientRect();
+    const px = (ev.clientX - rc.left) / rc.width * W;
+    const i = Math.max(0, Math.min(daily.length - 1,
+      Math.round((px - P.l) / (W - P.l - P.r) * (daily.length - 1))));
+    const r = daily[i];
+    cursor.setAttribute('x1', x(i)); cursor.setAttribute('x2', x(i));
+    cursor.setAttribute('opacity', 1);
+    dot.setAttribute('cx', x(i)); dot.setAttribute('cy', y(r.o));
+    dot.setAttribute('opacity', 1);
+    showTT(`<b>${dlabel(r.d)}</b><br>Orders: <b>${r.o}</b>` +
+      `<br>Revenue: <b>$${fmt.format(r.r)}</b>` +
+      (r.a != null ? `<br>7-day avg: <b>${r.a}</b>` : ''),
+      ev.clientX, ev.clientY);
+  });
+  svg.addEventListener('mouseleave', () => { hideTT();
+    cursor.setAttribute('opacity', 0); dot.setAttribute('opacity', 0); });
+}
+
+// ---------- overview brush (drag to zoom)
+function renderOverview() {
+  const box = document.getElementById('overview'); box.innerHTML = '';
+  const daily = cur().daily;
+  const W = 1000, H = 46, P = {l: 40, r: 10};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`,
+    style: 'cursor:crosshair'}, box);
+  const ymax = Math.max(...daily.map(d => d.o)) || 1;
+  const x = i => P.l + i / (N - 1) * (W - P.l - P.r);
+  const xi = px => Math.max(0, Math.min(N - 1,
+    Math.round((px - P.l) / (W - P.l - P.r) * (N - 1))));
+  let ad = `M${P.l} ${H - 4}`;
+  daily.forEach((r, i) => { ad += `L${x(i).toFixed(1)} `
+    + (H - 4 - r.o / ymax * (H - 10)).toFixed(1); });
+  ad += `L${W - P.r} ${H - 4} Z`;
+  el('path', {d: ad, fill: 'rgba(243,234,217,.12)'}, svg);
+  const win = el('rect', {y: 2, height: H - 6, fill: 'rgba(201,162,75,.14)',
+    stroke: 'var(--brass)', 'stroke-width': 1, rx: 2}, svg);
+  const setWin = () => { win.setAttribute('x', x(state.win[0]));
+    win.setAttribute('width', Math.max(x(state.win[1]) - x(state.win[0]), 3)); };
+  setWin();
+  let anchor = null;
+  const pxOf = ev => { const rc = svg.getBoundingClientRect();
+    return (ev.clientX - rc.left) / rc.width * W; };
+  svg.addEventListener('pointerdown', ev => {
+    anchor = xi(pxOf(ev)); svg.setPointerCapture(ev.pointerId);
+  });
+  svg.addEventListener('pointermove', ev => {
+    if (anchor == null) return;
+    const b = xi(pxOf(ev));
+    state.win = [Math.min(anchor, b), Math.max(anchor, b)]; setWin();
+  });
+  svg.addEventListener('pointerup', () => {
+    if (anchor == null) return;
+    if (state.win[1] - state.win[0] < 13)
+      state.win = [Math.max(0, state.win[0] - 7),
+                   Math.min(N - 1, state.win[0] + 7)];
+    anchor = null; renderTrend(); syncPressed(); setWin();
+  });
+}
+
+// ---------- weekday bars
+function dayIdxs() {
+  return state.dayView === 'wd' ? [0, 1, 2, 3, 4]
+       : state.dayView === 'we' ? [5, 6] : [0, 1, 2, 3, 4, 5, 6];
+}
+function renderDow() {
+  const box = document.getElementById('dow'); box.innerHTML = '';
+  const dow = cur().dow, color = CH_COLOR[state.ch], active = dayIdxs();
+  const W = 420, H = 240, P = {l: 36, r: 6, t: 20, b: 24};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, box);
+  const max = Math.max(...dow) * 1.12;
   const bw = (W - P.l - P.r) / 7;
   const y = v => H - P.b - v / max * (H - P.t - P.b);
   for (const v of niceTicks(max, 4)) {
     el('line', {x1: P.l, x2: W - P.r, y1: y(v), y2: y(v),
-      stroke: 'var(--grid)', 'stroke-width': .7}, svg);
-    el('text', {x: P.l - 6, y: y(v) + 3, 'text-anchor': 'end'}, svg).textContent = v;
+      stroke: 'var(--grid)', 'stroke-width': 1}, svg);
+    el('text', {x: P.l - 6, y: y(v) + 3, 'text-anchor': 'end',
+      class: 'num'}, svg).textContent = v;
   }
-  const peak = DATA.dow.reduce((a, b) => b.avg > a.avg ? b : a);
-  DATA.dow.forEach((d, i) => {
-    const bx = P.l + i * bw + bw * .18, w = bw * .64;
-    const col = d.day === peak.day ? 'var(--accent)' : 'var(--bar)';
-    const bar = el('path', {d:
-      `M${bx} ${H - P.b} V${y(d.avg) + 4} q0 -4 4 -4 h${w - 8} q4 0 4 4 V${H - P.b} Z`,
-      fill: col}, svg);
-    el('text', {x: bx + w / 2, y: H - 8, 'text-anchor': 'middle'}, svg)
-      .textContent = d.day.slice(0, 3);
-    if (d.day === peak.day)
-      el('text', {x: bx + w / 2, y: y(d.avg) - 6, 'text-anchor': 'middle',
-        fill: 'var(--ink)', 'font-weight': 600}, svg).textContent = d.avg;
+  const peak = active.reduce((a, b) => dow[b] > dow[a] ? b : a, active[0]);
+  DAYS.forEach((day, i) => {
+    const bx = P.l + i * bw + bw * .2, w = bw * .6;
+    const on = active.includes(i);
+    const bar = el('rect', {x: bx, y: y(dow[i]), width: w,
+      height: H - P.b - y(dow[i]),
+      fill: i === peak && on ? color : 'rgba(243,234,217,.16)',
+      opacity: on ? 1 : .28}, svg);
+    el('text', {x: bx + w / 2, y: H - 8, 'text-anchor': 'middle',
+      opacity: on ? 1 : .4}, svg).textContent = day.slice(0, 3);
+    if (i === peak && on)
+      el('text', {x: bx + w / 2, y: y(dow[i]) - 6, 'text-anchor': 'middle',
+        fill: 'var(--cream)', 'font-weight': 600, class: 'num'}, svg)
+        .textContent = dow[i];
     bar.addEventListener('mousemove', ev =>
-      showTT(`<b>${d.day}</b><br>Avg orders: <b>${d.avg}</b>`, ev.clientX, ev.clientY));
+      showTT(`<b>${day}</b><br>Avg: <b>${dow[i]}</b>`, ev.clientX, ev.clientY));
     bar.addEventListener('mouseleave', hideTT);
   });
-})();
+}
 
-// ---- heatmap
-(function () {
-  const {days, hours, values} = DATA.heat;
-  const W = 560, H = 260, P = {l: 40, r: 8, t: 8, b: 34};
-  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, document.getElementById('heat'));
-  const cw = (W - P.l - P.r) / hours.length, ch = (H - P.t - P.b) / 7;
-  const max = Math.max(...values.flat());
-  days.forEach((day, r) => {
-    el('text', {x: P.l - 6, y: P.t + r * ch + ch / 2 + 3, 'text-anchor': 'end'},
-      svg).textContent = day.slice(0, 3);
+// ---------- hour x day service grid
+function renderHeat() {
+  const box = document.getElementById('heat'); box.innerHTML = '';
+  const heat = cur().heat, hours = DATA.hours, rows = dayIdxs();
+  const W = 560, H = 30 + rows.length * 30 + 34;
+  const P = {l: 42, r: 8, t: 8, b: 34};
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`}, box);
+  const cw = (W - P.l - P.r) / hours.length, ch = 30;
+  const max = Math.max(...rows.flatMap(r => heat[r]));
+  rows.forEach((r, ri) => {
+    el('text', {x: P.l - 6, y: P.t + ri * ch + ch / 2 + 3,
+      'text-anchor': 'end'}, svg).textContent = DAYS[r].slice(0, 3);
     hours.forEach((h, c) => {
-      const v = values[r][c];
+      const v = heat[r][c];
       const bin = v === 0 ? 0 : Math.min(7, 1 + Math.floor(v / max * 6.999));
-      const rect = el('rect', {x: P.l + c * cw + 1, y: P.t + r * ch + 1,
-        width: cw - 2, height: ch - 2, rx: 2.5,
-        fill: `var(--seq${bin})`}, svg);
+      const rect = el('rect', {x: P.l + c * cw + 1, y: P.t + ri * ch + 1,
+        width: cw - 2, height: ch - 2, rx: 1.5, fill: RAMP[bin]}, svg);
       rect.addEventListener('mousemove', ev => showTT(
-        `<b>${day} ${h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}</b><br>Orders: <b>${v}</b>`,
-        ev.clientX, ev.clientY));
+        `<b>${DAYS[r]} ${h > 12 ? h - 12 : h}${h >= 12 ? 'pm' : 'am'}</b>` +
+        `<br>Orders: <b>${v}</b>`, ev.clientX, ev.clientY));
       rect.addEventListener('mouseleave', hideTT);
     });
   });
   hours.forEach((h, c) => { if (c % 2 === 0)
-    el('text', {x: P.l + c * cw + cw / 2, y: H - 18, 'text-anchor': 'middle'}, svg)
+    el('text', {x: P.l + c * cw + cw / 2, y: P.t + rows.length * ch + 16,
+      'text-anchor': 'middle'}, svg)
       .textContent = h > 12 ? (h - 12) + 'p' : h + (h === 12 ? 'p' : 'a'); });
-  el('text', {x: P.l, y: H - 2}, svg).textContent = 'fewer';
-  el('text', {x: W - P.r, y: H - 2, 'text-anchor': 'end'}, svg).textContent = 'more';
+  el('text', {x: P.l, y: H - 4}, svg).textContent = 'quiet';
+  el('text', {x: W - P.r, y: H - 4, 'text-anchor': 'end'}, svg)
+    .textContent = 'packed';
   for (let b = 0; b < 8; b++)
-    el('rect', {x: P.l + 40 + b * 14, y: H - 10, width: 12, height: 7, rx: 2,
-      fill: `var(--seq${b})`}, svg);
-})();
+    el('rect', {x: P.l + 44 + b * 14, y: H - 12, width: 12, height: 7,
+      rx: 1.5, fill: RAMP[b]}, svg);
+}
 
-// ---- forecast chart
-(function () {
-  const xs = DATA.recent.map(d => d.d).concat(DATA.forecast.map(d => d.d));
-  const actual = DATA.recent.map(d => d.o).concat(DATA.forecast.map(() => null));
-  const n = DATA.recent.length;
-  const fc = xs.map((_, i) => i >= n - 1
-    ? (i === n - 1 ? DATA.recent[n - 1].o : DATA.forecast[i - n].f) : null);
-  const bands = [];
-  xs.forEach((ds, i) => {
-    const dw = new Date(ds + 'T12:00').getDay();
-    if (dw === 6 || dw === 0) {
-      if (bands.length && i === bands[bands.length - 1][1] + 1)
-        bands[bands.length - 1][1] = i;
-      else bands.push([i, i]);
-    }
+// ---------- ticket rail
+(function renderTickets() {
+  const rail = document.getElementById('rail');
+  DATA.forecast.forEach((f, i) => {
+    const d = new Date(f.d + 'T12:00');
+    const t = document.createElement('div');
+    t.className = 'ticket';
+    t.style.setProperty('--d', i);
+    t.style.setProperty('--rot', ((i % 3) - 1) * 1.1 + 'deg');
+    t.innerHTML =
+      `<div class="t-day">${f.day.slice(0, 3).toUpperCase()}</div>` +
+      `<div class="t-date num">${MON[d.getMonth()]} ${d.getDate()}</div>` +
+      `<div class="t-num">${f.f}</div>` +
+      `<div class="t-unit">orders, whole house</div>` +
+      `<span class="stamp ${f.tier}">${f.tier}</span>`;
+    t.addEventListener('mousemove', ev => showTT(
+      `<b>${dlabel(f.d)}</b><br>Forecast: <b>${f.f}</b> orders<br>` +
+      {BUSY: 'Add staff', STEADY: 'Normal staffing',
+       LIGHT: 'Minimum staff'}[f.tier], ev.clientX, ev.clientY));
+    t.addEventListener('mouseleave', hideTT);
+    rail.appendChild(t);
   });
-  lineChart('fc', 1000, 300, [
-    {pts: actual, color: 'var(--ink)', w: 1.8},
-    {pts: fc, color: 'var(--accent)', w: 2.4, dash: '6 5'},
-  ], xs, i => {
-    if (i < n) return `<b>${dlabel(xs[i])}</b><br>Orders: <b>${actual[i]}</b>`;
-    const f = DATA.forecast[i - n];
-    return `<b>${dlabel(f.d)}</b><br>Forecast: <b>${f.f}</b><br>${f.tier}`;
-  }, {bands, divider: n - 1, dividerLabel: 'forecast →',
-      endDot: {i: xs.length - 1, s: 1}});
+  const m = DATA.models.map((r, i) =>
+    `${i === 0 ? '<b>' : ''}${r.model} ${r['MAPE_%']}%${i === 0 ? '</b>' : ''}`)
+    .join(' · ');
+  document.getElementById('models').innerHTML =
+    `Forecast by <b>${DATA.bestModel}</b> — 28-day holdout error (MAPE): ${m}`;
 })();
 
-// ---- tables
-document.getElementById('models').innerHTML =
-  '<tr><th>Model</th><th>MAE</th><th>MAPE</th></tr>' +
-  DATA.models.map((m, i) =>
-    `<tr><td>${m.model}${i === 0 ? ' ★' : ''}</td><td>${m.MAE}</td><td>${m['MAPE_%']}%</td></tr>`
-  ).join('');
-
-const chipClass = t => t.startsWith('Busy') ? 'busy'
-  : t.startsWith('Slow') ? 'slow' : 'normal';
-document.getElementById('staff').innerHTML =
-  '<tr><th>Date</th><th>Day</th><th>Forecast</th><th>Staffing</th></tr>' +
-  DATA.forecast.map(f =>
-    `<tr><td>${dlabel(f.d)}</td><td>${f.day}</td><td>${f.f}</td>` +
-    `<td><span class="chip ${chipClass(f.tier)}">${f.tier}</span></td></tr>`
-  ).join('');
+// ---------- render
+document.getElementById('range').textContent = DATA.range;
+function renderRhythm() { renderDow(); renderHeat(); }
+function renderAll() {
+  renderLedger(); renderTrend(); renderOverview(); renderRhythm();
+  syncPressed();
+}
+renderAll();
 </script>
 """
 
 
 def main() -> None:
     payload = build_payload()
-    html = TEMPLATE.replace("__DATA__", json.dumps(payload))
+    html = (TEMPLATE
+            .replace("__F_FRAUNCES__", font_b64("fraunces-600.woff2"))
+            .replace("__F_ARCHIVO__", font_b64("archivo-var.woff2"))
+            .replace("__DATA__", json.dumps(payload)))
     out = OUTPUT_DIR / "dashboard.html"
     out.write_text(html, encoding="utf-8")
     print(f"Wrote {out} ({out.stat().st_size / 1024:.0f} KB)")

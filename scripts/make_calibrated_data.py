@@ -1,15 +1,17 @@
-"""Build a calibrated SIMULATED dataset for an upscale Knoxville steakhouse.
+"""Build a calibrated SIMULATED full-house dataset for a Knoxville steakhouse.
+
+Covers every channel, not just delivery: dine-in checks, direct takeout,
+Uber Eats, and DoorDash. No real steakhouse publishes its complete POS
+records, so this stands in until real exports are available.
 
 Base: the public Maven Analytics "Pizza Place Sales" dataset (21k real
-restaurant orders over one year, data/public/) supplies the demand *shape* --
-hour-of-day by weekday, day-of-week mix, and month-of-year seasonality.
-That shape is rescaled to a delivery-only upscale steakhouse profile
-(dinner-dominant, Fri/Sat peaks, occasion spikes) and modulated by REAL
-Knoxville weather (Open-Meteo) and US holidays, then written out in
-Uber Eats / DoorDash export formats to data/raw/.
-
-This is simulated data. It stands in until the real Uber Eats Manager /
-DoorDash Merchant Portal exports are available.
+full-service restaurant orders over one year) supplies the hour-of-day and
+month-of-year demand shape. Each channel is rescaled to steakhouse norms and
+modulated by REAL Knoxville weather (Open-Meteo) and US holidays:
+  - rain nudges delivery UP (~+9%) and walk-in dine-in slightly DOWN (~-4%)
+  - occasion nights (Valentine's, Mother's/Father's Day, NYE) spike the
+    dining room hardest
+  - dinner dominates everywhere; dine-in keeps a real lunch trade
 
 Usage: python make_calibrated_data.py
 """
@@ -24,41 +26,41 @@ from config import HOLIDAY_STATE, LATITUDE, LONGITUDE, PROJECT_ROOT, RAW_DIR, TI
 PUBLIC = PROJECT_ROOT / "data" / "public"
 START, END = "2025-07-01", "2026-07-15"
 
-# Target scale: upscale steakhouse, delivery channels only. Lower volume,
-# much higher ticket than casual concepts.
-TARGET_DAILY_ORDERS = 22          # combined Uber Eats + DoorDash average
-UBEREATS_SHARE = 0.55
-TARGET_AVG_TICKET = 74.0          # steak entrees + sides skew checks high
 CLOSED_HOLIDAYS = {"Thanksgiving", "Christmas Day"}
 
-# The pizza base data is dine-in/carryout shaped (Friday peak, big weekday
-# lunch). A steakhouse's delivery demand is strongly dinner- and
-# weekend-skewed, so these profiles replace the base day-of-week mix and
-# reweight the hourly shape. Mean of DOW = 1.0.
-DOW_DELIVERY = {0: 0.78, 1: 0.84, 2: 0.90, 3: 0.98, 4: 1.22, 5: 1.32, 6: 0.96}
+# Steakhouse weekly rhythm (mean = 1.0): Fri/Sat peak, Monday trough.
+DOW_PROFILE = {0: 0.78, 1: 0.84, 2: 0.90, 3: 0.98, 4: 1.22, 5: 1.32, 6: 0.96}
 
+# Per-channel targets and behavior.
+CHANNELS = {
+    "dine_in": dict(daily=66, ticket=118.0, rain=0.96, occasion=1.0,
+                    lunch_wd=0.55, lunch_we=0.90, dinner=1.5,
+                    fname="pos_dinein_checks_simulated.csv"),
+    "takeout": dict(daily=9, ticket=72.0, rain=1.00, occasion=0.5,
+                    lunch_wd=0.40, lunch_we=0.60, dinner=1.6,
+                    fname="pos_takeout_orders_simulated.csv"),
+    "ubereats": dict(daily=12, ticket=74.0, rain=1.09, occasion=0.5,
+                     lunch_wd=0.30, lunch_we=0.60, dinner=1.6,
+                     fname="ubereats_orders_simulated.csv"),
+    "doordash": dict(daily=10, ticket=74.0, rain=1.09, occasion=0.5,
+                     lunch_wd=0.30, lunch_we=0.60, dinner=1.6,
+                     fname="doordash_orders_simulated.csv"),
+}
 
-def hour_weight(hour: int, dow: int) -> float:
-    if hour <= 13:                      # steakhouse lunch delivery is thin
-        return 0.6 if dow >= 5 else 0.3
-    if hour <= 16:
-        return 0.5
-    return 1.6                          # dinner overwhelmingly dominates
+rng = np.random.default_rng(7)
 
 
 def occasion_boost(day) -> float:
-    """Steakhouse occasion spikes not in the federal holiday calendar."""
+    """Occasion spikes a steakhouse actually sees (not federal holidays)."""
     if (day.month, day.day) == (2, 14):                      # Valentine's Day
-        return 1.7
+        return 1.9
     if day.month == 5 and day.dayofweek == 6 and 8 <= day.day <= 14:
-        return 1.6                                           # Mother's Day
+        return 1.7                                           # Mother's Day
     if day.month == 6 and day.dayofweek == 6 and 15 <= day.day <= 21:
-        return 1.45                                          # Father's Day
+        return 1.5                                           # Father's Day
     if (day.month, day.day) == (12, 31):                     # New Year's Eve
-        return 1.3
+        return 1.35
     return 1.0
-
-rng = np.random.default_rng(7)
 
 
 def load_base_patterns():
@@ -73,7 +75,6 @@ def load_base_patterns():
     orders["ts"] = pd.to_datetime(orders["date"] + " " + orders["time"])
     orders["dow"] = orders["ts"].dt.dayofweek
     orders["hour"] = orders["ts"].dt.hour
-    orders["month"] = orders["ts"].dt.month
     orders = orders.merge(totals.rename("total"), left_on="order_id",
                           right_index=True)
 
@@ -81,19 +82,30 @@ def load_base_patterns():
     idx = pd.to_datetime(pd.Series(daily.index))
     month_index = daily.groupby(idx.dt.month.values).mean()
     month_index /= month_index.mean()
-    dow_index = pd.Series(DOW_DELIVERY)
 
-    # Hour histogram per weekday from the base data, clipped to delivery
-    # hours 11:00-21:59, then reweighted toward a dinner-heavy profile.
-    hour_probs = {}
+    # Raw hour histogram per weekday, delivery/service hours 11:00-21:59.
+    hour_hist = {}
     for d in range(7):
         h = orders.loc[(orders["dow"] == d) & orders["hour"].between(11, 21),
                        "hour"].value_counts().reindex(range(11, 22), fill_value=0)
-        w = h.astype(float) * [hour_weight(hr, d) for hr in h.index]
-        hour_probs[d] = (w / w.sum()).values
+        hour_hist[d] = h.astype(float)
+    return month_index, hour_hist, orders["total"].values
 
-    ticket_scale = TARGET_AVG_TICKET / orders["total"].mean()
-    return dow_index, month_index, hour_probs, orders["total"].values, ticket_scale
+
+def hour_probs_for(cfg, hour_hist):
+    """Reweight the base hour shape for one channel."""
+    out = {}
+    for d in range(7):
+        h = hour_hist[d].copy()
+        for hr in h.index:
+            if hr <= 13:
+                h[hr] *= cfg["lunch_we"] if d >= 5 else cfg["lunch_wd"]
+            elif hr <= 16:
+                h[hr] *= 0.5
+            else:
+                h[hr] *= cfg["dinner"]
+        out[d] = (h / h.sum()).values
+    return out
 
 
 def fetch_weather():
@@ -113,75 +125,90 @@ def fetch_weather():
     return w
 
 
-def main() -> None:
-    dow_index, month_index, hour_probs, base_totals, ticket_scale = load_base_patterns()
-    weather = fetch_weather().set_index("date")
-    us_hols = holidays_lib.US(state=HOLIDAY_STATE, years=[2025, 2026])
-
+def simulate_channel(name, cfg, month_index, hour_hist, base_totals, weather,
+                     us_hols):
+    hour_probs = hour_probs_for(cfg, hour_hist)
+    ticket_scale = cfg["ticket"] / base_totals.mean()
     days = pd.date_range(START, END, freq="D")
-    all_orders = []
+    rows = []
     for day in days:
         hol = us_hols.get(day.date())
         if hol in CLOSED_HOLIDAYS:
             continue
-        mu = (TARGET_DAILY_ORDERS
-              * dow_index[day.dayofweek]
-              * month_index[day.month])
+        mu = cfg["daily"] * DOW_PROFILE[day.dayofweek] * month_index[day.month]
         w = weather.loc[day] if day in weather.index else None
         if w is not None and pd.notna(w["precip_in"]) and w["precip_in"] > 0.1:
-            mu *= 1.09  # rain nudges people toward delivery
-        if hol:  # open but slower on most federal holidays
+            mu *= cfg["rain"]
+        if hol:
             mu *= 0.9
-        mu *= occasion_boost(day)
-        # day-level noise beyond Poisson (supply, promos, randomness)
-        mu *= rng.gamma(30, 1 / 30)
+        mu *= 1 + (occasion_boost(day) - 1) * cfg["occasion"]
+        mu *= rng.gamma(30, 1 / 30)      # day-level noise beyond Poisson
         n = rng.poisson(mu)
-        hours = rng.choice(np.arange(11, 22), size=n, p=hour_probs[day.dayofweek])
+        hours = rng.choice(np.arange(11, 22), size=n,
+                           p=hour_probs[day.dayofweek])
         base = rng.choice(base_totals, size=n)
         totals = np.round(base * ticket_scale * rng.normal(1, 0.14, n), 2)
         totals = np.clip(totals, 25.0, None)
         for h, t in zip(hours, totals):
-            ts = day.replace(hour=int(h), minute=int(rng.integers(0, 60)),
-                             second=int(rng.integers(0, 60)))
-            all_orders.append((ts, float(t)))
+            rows.append((day.replace(hour=int(h),
+                                     minute=int(rng.integers(0, 60)),
+                                     second=int(rng.integers(0, 60))),
+                         float(t)))
+    return pd.DataFrame(rows, columns=["ts", "total"]).sort_values("ts")
 
-    df = pd.DataFrame(all_orders, columns=["ts", "total"]).sort_values("ts")
-    df["platform"] = np.where(rng.random(len(df)) < UBEREATS_SHARE,
-                              "ubereats", "doordash")
+
+def write_export(name, df):
+    if name == "ubereats":
+        out = pd.DataFrame({
+            "Order ID": [f"UE-{i:06d}" for i in range(len(df))],
+            "Time Customer Ordered": df["ts"].dt.strftime("%m/%d/%Y %I:%M %p"),
+            "Order Status": "Completed",
+            "Food Sales": df["total"].values,
+        })
+    elif name == "doordash":
+        out = pd.DataFrame({
+            "Order ID": [f"DD-{i:06d}" for i in range(len(df))],
+            "Timestamp Local Date": df["ts"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "Order Status": "Delivered",
+            "Subtotal": df["total"].values,
+        })
+    else:  # POS-style export (dine-in / takeout)
+        out = pd.DataFrame({
+            "Check Number": [f"{i + 1:06d}" for i in range(len(df))],
+            "Opened At": df["ts"].dt.strftime("%Y-%m-%d %H:%M:%S"),
+            "Order Type": "Dine-In" if name == "dine_in" else "Takeout",
+            "Check Total": df["total"].values,
+        })
+    out.to_csv(RAW_DIR / CHANNELS[name]["fname"], index=False)
+
+
+def main() -> None:
+    month_index, hour_hist, base_totals = load_base_patterns()
+    weather = fetch_weather().set_index("date")
+    us_hols = holidays_lib.US(state=HOLIDAY_STATE, years=[2025, 2026])
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
-    ue = df[df["platform"] == "ubereats"].reset_index(drop=True)
-    pd.DataFrame({
-        "Order ID": [f"UE-{i:06d}" for i in range(len(ue))],
-        "Time Customer Ordered": ue["ts"].dt.strftime("%m/%d/%Y %I:%M %p"),
-        "Order Status": "Completed",
-        "Food Sales": ue["total"],
-    }).to_csv(RAW_DIR / "ubereats_orders_simulated.csv", index=False)
-
-    dd = df[df["platform"] == "doordash"].reset_index(drop=True)
-    pd.DataFrame({
-        "Order ID": [f"DD-{i:06d}" for i in range(len(dd))],
-        "Timestamp Local Date": dd["ts"].dt.strftime("%Y-%m-%d %H:%M:%S"),
-        "Order Status": "Delivered",
-        "Subtotal": dd["total"],
-    }).to_csv(RAW_DIR / "doordash_orders_simulated.csv", index=False)
+    summary = []
+    for name, cfg in CHANNELS.items():
+        df = simulate_channel(name, cfg, month_index, hour_hist, base_totals,
+                              weather, us_hols)
+        write_export(name, df)
+        summary.append(f"  {name:9s} {len(df):6d} orders, "
+                       f"avg ${df['total'].mean():.2f}")
+        print(summary[-1])
 
     (RAW_DIR / "DATA_README.txt").write_text(
         "SIMULATED DATA - calibrated, not actual restaurant records.\n"
-        "Demand shape: Maven Analytics 'Pizza Place Sales' public dataset\n"
-        "(hour-of-day, day-of-week, month-of-year patterns from 21k real orders).\n"
-        "Rescaled to a delivery-only upscale steakhouse profile (~22 orders/day,\n"
-        "~$74 avg ticket, dinner-dominant, Fri/Sat peaks, occasion spikes on\n"
-        "Valentine's/Mother's/Father's Day and NYE) and modulated by real\n"
-        "Knoxville, TN weather (Open-Meteo) and TN holidays.\n"
-        "Replace these files with real Uber Eats Manager / DoorDash Merchant\n"
-        "Portal exports when available; the pipeline runs unchanged.\n",
+        "Full-house steakhouse profile: dine-in checks, takeout, Uber Eats,\n"
+        "DoorDash. Demand shape from the public Maven Analytics 'Pizza Place\n"
+        "Sales' dataset (21k real full-service orders); rescaled to steakhouse\n"
+        "norms (dinner-dominant, Fri/Sat peaks, occasion spikes on Valentine's/\n"
+        "Mother's/Father's Day and NYE) and modulated by real Knoxville, TN\n"
+        "weather (rain lifts delivery, dents walk-ins) and TN holidays.\n"
+        "Replace these files with real POS / Uber Eats Manager / DoorDash\n"
+        "Merchant Portal exports; the pipeline runs unchanged.\n",
         encoding="utf-8")
-
-    print(f"{len(ue)} Uber Eats + {len(dd)} DoorDash simulated orders "
-          f"({df['ts'].min().date()} to {df['ts'].max().date()}) -> {RAW_DIR}")
-    print(f"Avg ticket: ${df['total'].mean():.2f}   "
-          f"Avg orders/day: {len(df) / df['ts'].dt.date.nunique():.1f}")
+    print(f"Wrote exports to {RAW_DIR}")
 
 
 if __name__ == "__main__":
