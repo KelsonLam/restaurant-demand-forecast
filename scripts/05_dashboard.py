@@ -34,13 +34,27 @@ def channel_block(daily, orders, weather):
     daily = daily.sort_values("date").reset_index(drop=True)
     daily["a"] = daily["orders"].rolling(7).mean().round(1)
     daily = daily.merge(weather, on="date", how="left")
+
+    # Per-day hour-of-day counts ride along with each daily row so the page
+    # can recompute "peak hour" (and every other ledger stat) for whatever
+    # date window is selected, instead of showing full-period numbers.
+    hr = (orders[orders["hour"].isin(HOURS)]
+          .groupby([orders["ordered_at"].dt.normalize(), "hour"]).size()
+          .unstack(fill_value=0)
+          .reindex(index=daily["date"], columns=HOURS, fill_value=0))
+
     rows = [{"d": d.strftime("%Y-%m-%d"), "o": int(o), "r": round(r),
              "a": None if pd.isna(a) else float(a),
-             "pr": None if pd.isna(pr) else round(float(pr), 2),
-             "tm": None if pd.isna(tm) else round(float(tm))}
-            for d, o, r, a, pr, tm in zip(
+             # 3 decimals, not 2: the rainy-night threshold is > 0.1 in, and
+             # 2-decimal rounding pushes borderline days (0.103 in) onto the
+             # wrong side of it, skewing the in-window rain lift.
+             "pr": None if pd.isna(pr) else round(float(pr), 3),
+             "tm": None if pd.isna(tm) else round(float(tm)),
+             "h": hs}
+            for d, o, r, a, pr, tm, hs in zip(
                 daily["date"], daily["orders"], daily["revenue"], daily["a"],
-                daily["precip_in"], daily["temp_max_f"])]
+                daily["precip_in"], daily["temp_max_f"],
+                hr.to_numpy().astype(int).tolist())]
 
     dow = (daily.assign(day=daily["date"].dt.day_name())
            .groupby("day")["orders"].mean().reindex(DAY_ORDER).round(1))
@@ -50,29 +64,13 @@ def channel_block(daily, orders, weather):
             .unstack(fill_value=0)
             .reindex(DAY_ORDER).reindex(columns=HOURS, fill_value=0))
 
-    hour_totals = heat.sum(axis=0)
-    peak_hour = int(hour_totals.idxmax())
-    ph = f"{peak_hour - 12 if peak_hour > 12 else peak_hour}–" \
-         f"{peak_hour - 11 if peak_hour >= 12 else peak_hour + 1} pm"
-
-    rainy = daily["precip_in"] > 0.1
-    rain_lift = (daily.loc[rainy, "orders"].mean()
-                 / daily.loc[~rainy, "orders"].mean() - 1) * 100
+    assert hr.sum(axis=0).tolist() == heat.sum(axis=0).tolist(), \
+        "per-day hour counts disagree with the day-of-week heat grid"
 
     return {
         "daily": rows,
         "dow": [float(v) for v in dow.values],
         "heat": heat.values.tolist(),
-        "stats": {
-            "avgOrders": round(daily["orders"].mean(), 1),
-            "avgRev": round(daily["revenue"].mean()),
-            "avgTicket": round(daily["revenue"].sum()
-                               / max(daily["orders"].sum(), 1), 2),
-            "totalRev": round(daily["revenue"].sum()),
-            "peakDay": dow.idxmax(),
-            "peakHour": ph,
-            "rainLift": round(rain_lift, 1),
-        },
     }
 
 
@@ -94,10 +92,12 @@ def build_payload():
         o = orders if ch == "all" else orders[orders["platform"] == ch]
         channels[ch] = channel_block(d.copy(), o, weather)
 
-    total_rev = channels["all"]["stats"]["totalRev"]
+    # The page computes share-of-house by summing revenue at matching indices
+    # across channels, so every channel must cover the same date sequence.
+    base = [r["d"] for r in channels["all"]["daily"]]
     for ch in CHANNELS:
-        channels[ch]["stats"]["share"] = round(
-            channels[ch]["stats"]["totalRev"] / total_rev * 100, 1)
+        assert [r["d"] for r in channels[ch]["daily"]] == base, \
+            f"channel '{ch}' daily dates misaligned with 'all'"
 
     tiers = {"Busy - add staff": "BUSY", "Normal": "STEADY",
              "Slow - minimum staff": "LIGHT"}
@@ -486,25 +486,64 @@ function syncPressed() {
     b.setAttribute('aria-pressed', b.dataset.view === state.dayView));
 }
 
-// ---------- ledger stats
+// ---------- ledger stats, recomputed over the active date window
+function spanLabel(a, b) {
+  const d0 = new Date(a + 'T12:00'), d1 = new Date(b + 'T12:00');
+  const f = d => MON[d.getMonth()] + ' ' + d.getDate();
+  return d0.getFullYear() === d1.getFullYear()
+    ? `${f(d0)} – ${f(d1)}, ${d1.getFullYear()}`
+    : `${f(d0)}, ${d0.getFullYear()} – ${f(d1)}, ${d1.getFullYear()}`;
+}
+function windowStats() {
+  const days = cur().daily.slice(state.win[0], state.win[1] + 1);
+  const house = DATA.channels.all.daily.slice(state.win[0], state.win[1] + 1);
+  let totO = 0, totR = 0, houseR = 0, rainO = 0, rainN = 0, dryO = 0, dryN = 0;
+  const byDow = Array(7).fill(0), nDow = Array(7).fill(0);
+  const byHour = DATA.hours.map(() => 0);
+  days.forEach((r, i) => {
+    totO += r.o; totR += r.r; houseR += house[i].r;
+    const w = (new Date(r.d + 'T12:00').getDay() + 6) % 7;
+    byDow[w] += r.o; nDow[w]++;
+    r.h.forEach((v, j) => byHour[j] += v);
+    if (r.pr != null)
+      r.pr > 0.1 ? (rainO += r.o, rainN++) : (dryO += r.o, dryN++);
+  });
+  const dowMean = byDow.map((v, i) => nDow[i] ? v / nDow[i] : -1);
+  const ph = DATA.hours[byHour.indexOf(Math.max(...byHour))];
+  return {
+    avgOrders: totO / days.length,
+    avgRev: totR / days.length,
+    avgTicket: totR / Math.max(totO, 1),
+    share: totR / Math.max(houseR, 1) * 100,
+    peakDay: DAYS[dowMean.indexOf(Math.max(...dowMean))],
+    peakHour: `${ph > 12 ? ph - 12 : ph}–${ph >= 12 ? ph - 11 : ph + 1} pm`,
+    rainLift: rainN && dryN ? ((rainO / rainN) / (dryO / dryN) - 1) * 100 : null,
+    noRain: !rainN,
+    span: spanLabel(days[0].d, days[days.length - 1].d),
+  };
+}
+const r1 = v => Math.round(v * 10) / 10;
 function renderLedger() {
-  const s = cur().stats;
+  const s = windowStats();
   document.getElementById('statnote').textContent =
     DATA.labels[state.ch] + (state.ch === 'all' ? '' :
-      ` · ${s.share}% of house revenue`);
+      ` · ${r1(s.share)}% of house revenue`);
+  const rain = s.rainLift == null
+    ? `<span class="num">—</span> <small>no ${s.noRain ? 'rainy' : 'dry'} nights in view</small>`
+    : `<span class="num">${s.rainLift >= 0 ? '+' : '−'}${r1(Math.abs(s.rainLift))}%</span> <small>vs dry</small>`;
   const rows = [
     ['HOW MUCH', [
       [state.ch === 'dine-in' ? 'Checks per day' : 'Orders per day',
-       `<span class="num">${s.avgOrders}</span>`],
-      ['Revenue per day', `<span class="num">$${fmt.format(s.avgRev)}</span>`],
+       `<span class="num">${r1(s.avgOrders)}</span>`],
+      ['Revenue per day', `<span class="num">$${fmt.format(Math.round(s.avgRev))}</span>`],
       ['Average check', `<span class="num">$${fmt.format(Math.round(s.avgTicket))}</span>`],
-      ['Share of house', `<span class="num">${s.share}%</span>`],
+      ['Share of house', `<span class="num">${r1(s.share)}%</span>`],
     ]],
     ['WHEN', [
       ['Peak day', s.peakDay],
       ['Peak hour', s.peakHour],
-      ['Rainy days', `<span class="num">${s.rainLift >= 0 ? '+' : '−'}${Math.abs(s.rainLift)}%</span> <small>vs dry</small>`],
-      ['Season covered', `<span class="num">${DATA.range}</span>`],
+      ['Rainy days', rain],
+      ['Dates in view', `<span class="num">${s.span}</span>`],
     ]],
   ];
   let html = '', d = 0;
@@ -638,7 +677,7 @@ function renderOverview() {
     if (state.win[1] - state.win[0] < 13)
       state.win = [Math.max(0, state.win[0] - 7),
                    Math.min(N - 1, state.win[0] + 7)];
-    anchor = null; renderTrend(); syncPressed(); setWin();
+    anchor = null; renderLedger(); renderTrend(); syncPressed(); setWin();
   });
 }
 
